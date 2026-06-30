@@ -23,6 +23,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--test-count", type=int, default=100)
     parser.add_argument("--start-margin-seconds", type=float, default=5.0)
     parser.add_argument("--end-margin-seconds", type=float, default=5.0)
+    parser.add_argument(
+        "--test-from-other-videos",
+        action="store_true",
+        help="Build the test output from all videos except --real-test-video.",
+    )
     parser.add_argument("--overwrite", action="store_true")
     return parser.parse_args()
 
@@ -49,16 +54,19 @@ def main() -> None:
     prepare_output(train_output, args.overwrite)
     prepare_output(test_output, args.overwrite)
 
-    test_infos = [probe_video(real_test_video)]
+    real_test_info = probe_video(real_test_video)
     train_infos = [info for video in train_videos if (info := probe_video(video)).opened and info.duration > 0]
-    if not test_infos[0].opened:
+    test_infos = train_infos if args.test_from_other_videos else [real_test_info]
+    if not real_test_info.opened:
         raise RuntimeError(f"Cannot open test video: {real_test_video}")
+    if not test_infos:
+        raise RuntimeError("No usable videos found for test extraction.")
 
     test_rows = extract_from_videos(
         test_infos,
         test_output,
         args.test_count,
-        prefix="gold",
+        prefix="aux" if args.test_from_other_videos else "gold",
         start_margin=args.start_margin_seconds,
         end_margin=args.end_margin_seconds,
     )
@@ -79,7 +87,9 @@ def main() -> None:
     print("train_videos:")
     for info in train_infos:
         print(f"- {info.path} duration={info.duration:.1f}s frames={info.frames} fps={info.fps:.3f}")
-    print(f"test_video={test_infos[0].path} duration={test_infos[0].duration:.1f}s")
+    print("test_videos:")
+    for info in test_infos:
+        print(f"- {info.path} duration={info.duration:.1f}s frames={info.frames} fps={info.fps:.3f}")
 
 
 class VideoInfo:
