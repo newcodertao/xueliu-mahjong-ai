@@ -1,0 +1,16 @@
+app:
+  name: xueliu-mahjong-ai
+  data_dir: data
+  dataset_dir: datasets/xueliu_tiles_v1
+  log_dir: data/games
+
+capture:
+  monitor: 1
+  interval_seconds: 0.5
+  save_fullscreen: true
+  save_rois: true
+
+vision:
+  confidence_threshold: 0.60
+  iou_threshold: 0.50
+  stable_frames: 2

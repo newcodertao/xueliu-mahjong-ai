@@ -1,0 +1,25 @@
+screen:
+  monitor: 1
+  width: null
+  height: null
+rois:
+  my_hand:
+    x: 849
+    y: 1507
+    width: 2157
+    height: 228
+  drawn_tile:
+    x: 0
+    y: 0
+    width: 0
+    height: 0
+  missing_suit:
+    x: 0
+    y: 0
+    width: 0
+    height: 0
+  action_buttons:
+    x: 0
+    y: 0
+    width: 0
+    height: 0

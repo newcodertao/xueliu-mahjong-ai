@@ -1,0 +1,11 @@
+rules:
+  suits: [W, T, B]
+  ranks: [1, 2, 3, 4, 5, 6, 7, 8, 9]
+  copies_per_tile: 4
+  require_missing_suit: true
+  discard_missing_suit_first: true
+  first_version_patterns:
+    - normal
+    - seven_pairs
+    - all_triplets
+    - flush

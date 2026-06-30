@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "xueliu-mahjong-ai"
+version = "0.1.0"
+description = "Local visual recognition and training assistant for Sichuan Xueliu Mahjong."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "mss>=9.0.1",
+  "opencv-python>=4.9.0",
+  "numpy>=1.26",
+  "PyYAML>=6.0.1",
+  "python-dotenv>=1.0.1",
+  "roboflow>=1.1.50",
+  "ultralytics>=8.3.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+  "ruff>=0.6.0",
+]
+
+[project.scripts]
+xueliu-ai = "xueliu_ai.main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
