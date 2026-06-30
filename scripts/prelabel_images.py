@@ -145,18 +145,16 @@ def write_xany_json(
     shapes = []
     for det in detections:
         x1, y1, x2, y2 = det["xyxy"]
-        score = round(det["score"], 6)
         shapes.append(
             {
                 "label": det["label"],
-                "score": score,
                 "points": [[x1, y1], [x2, y1], [x2, y2], [x1, y2]],
                 "group_id": None,
-                "description": "AI prelabel; please review before training",
+                "description": "",
                 "difficult": False,
                 "shape_type": "rectangle",
                 "flags": {},
-                "attributes": {"source": source_name, "confidence": score},
+                "attributes": {},
                 "kie_linking": [],
             }
         )
