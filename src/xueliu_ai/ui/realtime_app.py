@@ -7,7 +7,7 @@ import threading
 import time
 import tkinter as tk
 from collections import Counter, deque
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from tkinter import ttk
 
@@ -254,8 +254,6 @@ class RealtimeApp:
                 low_hand_candidates = _low_confidence_hand_candidates(
                     detector, table_image, conf, iou, enabled=self.auto_zones_var.get()
                 )
-                zones = structural_fusion.update(zones, low_hand_candidates)
-                zones = event_classifier.update(zones, table_image.shape[1], table_image.shape[0])
 
                 hand_tiles = zones.hand
                 play_roi = profile.rois.get("my_play_area")
@@ -271,9 +269,14 @@ class RealtimeApp:
                     hand_tiles = [det.label for det in sorted(hand_detections, key=lambda item: item.center_x)]
                     zones = _replace_zone_hand(zones, hand_tiles)
 
+                zones = structural_fusion.update(zones, low_hand_candidates)
+                zones = event_classifier.update(zones, table_image.shape[1], table_image.shape[0])
+
                 raw_hand_tiles = hand_tiles
                 raw_zones = zones
                 zones = reconcile_zone_tile_limits(zones)
+                structured_table_state = structural_fusion.build_structured_state(zones)
+                zones = structured_table_state.zones
                 hand_tiles = zones.hand
                 use_table_context = self.use_table_context_var.get()
                 diagnostics = diagnose_zones(zones)
@@ -296,7 +299,6 @@ class RealtimeApp:
                         allow=False,
                         reasons=[*decision.reasons, f"region_state:{region_check.reason}"],
                     )
-                structured_table_state = replace(structural_fusion.last_state, zones=zones)
                 structure_check = structured_state.update(
                     structured_table_state,
                     phase_stable=decision.phase in {GamePhase.WAITING, GamePhase.MY_TURN},
@@ -336,7 +338,14 @@ class RealtimeApp:
                     "suspected_open_melds": structured_table_state.suspected_open_melds,
                     "inferred_tile_count": structured_table_state.inferred_tile_count,
                     "structured_state_status": structure_check.state.value,
-                    "recommend_block_reason": None if decision.allow else structure_check.reason,
+                    "structured_reason": structure_check.reason,
+                    "recommend_block_reason": (
+                        None
+                        if decision.allow
+                        else decision.reasons[0]
+                        if decision.reasons
+                        else structure_check.reason
+                    ),
                     "auto_zones": self.auto_zones_var.get(),
                     "use_table_context": use_table_context,
                     "zones": zones.to_dict(),
@@ -356,6 +365,7 @@ class RealtimeApp:
                         "warnings": diagnostics.warnings,
                         "expected_hand_counts": diagnostics.expected_hand_counts,
                         "open_melds": diagnostics.open_melds,
+                        "logical_warnings": diagnostics.logical_warnings,
                     },
                     "region_state": structure_check.to_dict(),
                     "legacy_region_state": region_check.to_dict(),

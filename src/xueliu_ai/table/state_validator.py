@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from collections import Counter
+from dataclasses import dataclass
 
 from xueliu_ai.table.structured_types import RegionState
 
@@ -38,6 +38,8 @@ def validate_structured_state(
         errors = state.consistency_errors()
         if errors:
             return StructuredStateResult(RegionState.INVALID, False, errors[0])
+        if state.meld_history_transient:
+            return StructuredStateResult(RegionState.TRANSIENT, False, "meld_track_temporarily_missing")
     if zones.event_tiles:
         return StructuredStateResult(RegionState.TRANSIENT, False, "event_animation_active")
     if not phase_stable:
@@ -54,11 +56,13 @@ def validate_structured_state(
     )
     if any(count > 4 for count in observed_counts.values()):
         return StructuredStateResult(RegionState.INVALID, False, "observed_tile_count_over_four")
-    if consecutive_stable_frames < minimum_stable_frames:
-        return StructuredStateResult(RegionState.UNCERTAIN, False, "waiting_for_structural_stability")
+    if state is not None and any(count > 4 for count in state.logical_visible_counts.values()):
+        return StructuredStateResult(RegionState.UNCERTAIN, False, "logical_tile_count_over_four")
     inferred_hand = any(tile.inferred for tile in zones.zone_tiles if tile.zone == "hand")
     if inferred_hand:
         return StructuredStateResult(RegionState.UNCERTAIN, False, "inferred_hand_tile_present")
+    if consecutive_stable_frames < minimum_stable_frames:
+        return StructuredStateResult(RegionState.UNCERTAIN, False, "waiting_for_structural_stability")
     inferred = any(group.inferred_tiles for group in zones.meld_groups if group.is_confirmed)
     if inferred:
         return StructuredStateResult(RegionState.INFERRED_SAFE, True, "stable_with_safe_inference")
@@ -73,10 +77,47 @@ class StructuredStateMachine:
 
     def update(self, state_or_zones, phase_stable: bool, diagnostics_valid: bool) -> StructuredStateResult:
         zones = state_or_zones.zones if hasattr(state_or_zones, "zones") else state_or_zones
+        safety = validate_structured_state(
+            state_or_zones,
+            phase_stable=phase_stable,
+            consecutive_stable_frames=0,
+            minimum_stable_frames=0,
+            diagnostics_valid=diagnostics_valid,
+        )
+        if safety.state not in {RegionState.CONFIRMED, RegionState.INFERRED_SAFE}:
+            self._last_signature = None
+            self._stable_frames = 0
+            return safety
         signature = (
-            tuple(zones.hand),
-            tuple((group.zone, group.kind.value, group.label) for group in zones.meld_groups),
-            tuple(zones.event_tiles),
+            tuple(
+                (tile.label, tile.inferred, tile.track_id, _position_bucket(tile.center_x), _position_bucket(tile.center_y))
+                for tile in zones.zone_tiles
+                if tile.zone == "hand"
+            ),
+            tuple(
+                (
+                    group.group_id,
+                    group.zone,
+                    group.kind.value,
+                    group.label,
+                    tuple(
+                        (
+                            tile.track_id,
+                            tile.inferred,
+                            _position_bucket(tile.center_x),
+                            _position_bucket(tile.center_y),
+                        )
+                        for tile in group.logical_tiles
+                    ),
+                )
+                for group in zones.meld_groups
+            ),
+            tuple((tile.label, tile.track_id) for tile in zones.zone_tiles if tile.zone == "unknown_tiles"),
+            tuple((tile.label, tile.track_id) for tile in zones.zone_tiles if tile.zone == "event_tiles"),
+            tuple((tile.label, tile.track_id) for tile in zones.zone_tiles if tile.zone == "hu_display_tiles"),
+            tuple(sorted(getattr(state_or_zones, "observed_visible_counts", {}).items())),
+            tuple(sorted(getattr(state_or_zones, "logical_visible_counts", {}).items())),
+            diagnostics_valid,
         )
         if signature == self._last_signature:
             self._stable_frames += 1
@@ -90,6 +131,11 @@ class StructuredStateMachine:
             minimum_stable_frames=self.minimum_stable_frames,
             diagnostics_valid=diagnostics_valid,
         )
+
+
+def _position_bucket(value: float, size: float = 5.0) -> int:
+    """Keep structural stability sensitive to movement without reacting to detector jitter."""
+    return round(value / size)
 
 
 def combine_recommendation_gates(

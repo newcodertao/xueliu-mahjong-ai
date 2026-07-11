@@ -186,6 +186,7 @@ class StructuredTableState:
     suspected_open_melds: int
     observed_visible_counts: dict[str, int]
     logical_visible_counts: dict[str, int]
+    meld_history_transient: bool = False
 
     @property
     def inferred_tile_count(self) -> int:
@@ -201,7 +202,17 @@ class StructuredTableState:
             errors.append("confirmed_open_meld_count_mismatch")
         if self.suspected_open_melds != suspected:
             errors.append("suspected_open_meld_count_mismatch")
+        group_ids = [group.group_id for group in self.meld_groups]
+        if len(group_ids) != len(set(group_ids)):
+            errors.append("duplicate_meld_group_id")
+        known_group_ids = set(group_ids)
+        physical_memberships: dict[tuple, set[str]] = {}
         for group in self.meld_groups:
+            expected_count = 3 if group.kind in {MeldKind.PONG, MeldKind.SUSPECTED_PONG} else 4
+            if group.logical_count != expected_count:
+                errors.append(f"meld_logical_count_mismatch:{group.group_id}")
+            if group.observed_count > group.logical_count:
+                errors.append(f"meld_observed_count_exceeds_logical:{group.group_id}")
             zone_labels = [
                 tile.label
                 for tile in getattr(self.zones, "zone_tiles", [])
@@ -209,4 +220,38 @@ class StructuredTableState:
             ]
             if sorted(zone_labels) != sorted(tile.label for tile in group.logical_tiles):
                 errors.append(f"meld_zone_tiles_mismatch:{group.group_id}")
+            for tile in group.logical_tiles:
+                identity = (
+                    "track",
+                    tile.track_id,
+                ) if tile.track_id is not None else (
+                    "box",
+                    round(tile.x1, 1),
+                    round(tile.y1, 1),
+                    round(tile.x2, 1),
+                    round(tile.y2, 1),
+                    tile.inferred,
+                )
+                physical_memberships.setdefault(identity, set()).add(group.group_id)
+        if any(len(memberships) > 1 for memberships in physical_memberships.values()):
+            errors.append("tile_belongs_to_multiple_meld_groups")
+        for tile in getattr(self.zones, "zone_tiles", []):
+            if tile.zone.endswith("_melds") and tile.group_id not in known_group_ids:
+                errors.append("meld_tile_references_unknown_group")
+                break
+        if self._recompute_visible_counts(logical=False) != self.observed_visible_counts:
+            errors.append("observed_visible_counts_mismatch")
+        if self._recompute_visible_counts(logical=True) != self.logical_visible_counts:
+            errors.append("logical_visible_counts_mismatch")
         return errors
+
+    def _recompute_visible_counts(self, logical: bool) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for tile in getattr(self.zones, "zone_tiles", []):
+            if tile.zone == "center_discards" and (logical or not tile.inferred):
+                counts[tile.label] = counts.get(tile.label, 0) + 1
+        for group in self.meld_groups:
+            tiles = group.logical_tiles if logical else group.observed_only_tiles
+            for tile in tiles:
+                counts[tile.label] = counts.get(tile.label, 0) + 1
+        return counts

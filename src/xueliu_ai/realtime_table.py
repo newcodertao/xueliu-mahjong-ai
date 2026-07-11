@@ -98,6 +98,7 @@ class ZoneDiagnostics:
     warnings: list[str]
     expected_hand_counts: list[int]
     open_melds: int
+    logical_warnings: list[str] = field(default_factory=list)
 
     def message(self) -> str:
         if not self.warnings:
@@ -220,7 +221,7 @@ def classify_table_zones(detections: list[Detection], width: int, height: int) -
     return _classify_table_zones_auto(detections, width, height)
 
 
-def diagnose_zones(zones: TableZones) -> ZoneDiagnostics:
+def _diagnose_zones_legacy(zones: TableZones) -> ZoneDiagnostics:
     open_melds = _open_melds_from_groups(zones.meld_groups, "bottom_melds")
     expected_counts = sorted({13 - open_melds * 3, 14 - open_melds * 3})
     warnings: list[str] = []
@@ -618,6 +619,49 @@ def logical_visible_counts_from_zones(zones: TableZones, include_hand: bool = Fa
     visible.extend(tile.label for group in zones.meld_groups for tile in group.logical_tiles)
     visible.extend(tile.label for tile in zones.zone_tiles if tile.zone == "center_discards")
     return dict(Counter(visible))
+
+
+def diagnose_zones(zones: TableZones) -> ZoneDiagnostics:
+    confirmed_open_melds = _open_melds_from_groups(zones.meld_groups, "bottom_melds")
+    expected_counts = sorted({13 - confirmed_open_melds * 3, 14 - confirmed_open_melds * 3})
+    warnings: list[str] = []
+    logical_warnings: list[str] = []
+
+    if len(zones.hand) not in expected_counts:
+        expected_text = "/".join(str(value) for value in expected_counts)
+        warnings.append(f"hand count invalid: expected {expected_text}, got {len(zones.hand)}")
+
+    observed_counts = visible_counts_from_zones(zones, include_hand=True)
+    logical_counts = logical_visible_counts_from_zones(zones, include_hand=True)
+    observed_over = {tile: count for tile, count in observed_counts.items() if count > 4}
+    logical_over = {tile: count for tile, count in logical_counts.items() if count > 4}
+    if observed_over:
+        warnings.append(
+            "observed tile count over 4: "
+            + " ".join(f"{tile}x{count}" for tile, count in sorted(observed_over.items()))
+        )
+    if logical_over:
+        logical_warnings.append(
+            "logical tile count over 4: "
+            + " ".join(f"{tile}x{count}" for tile, count in sorted(logical_over.items()))
+        )
+
+    for name, tiles in (
+        ("bottom_melds", zones.bottom_melds),
+        ("left_melds", zones.left_melds),
+        ("top_melds", zones.top_melds),
+        ("right_melds", zones.right_melds),
+    ):
+        if tiles and not _meld_labels_are_plausible(tiles):
+            warnings.append(f"{name} structure invalid: {len(tiles)} tiles")
+
+    return ZoneDiagnostics(
+        valid=not warnings,
+        warnings=warnings,
+        expected_hand_counts=expected_counts,
+        open_melds=confirmed_open_melds,
+        logical_warnings=logical_warnings,
+    )
 
 
 def reconcile_zone_tile_limits(zones: TableZones) -> TableZones:

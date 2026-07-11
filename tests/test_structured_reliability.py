@@ -144,3 +144,80 @@ def test_confirmed_state_allows_recommendation() -> None:
     result = machine.update(zones, phase_stable=True, diagnostics_valid=True)
     assert result.state == RegionState.CONFIRMED
     assert combine_recommendation_gates(result, True, True)
+
+
+def test_unknown_frame_resets_structured_stability() -> None:
+    machine = StructuredStateMachine(minimum_stable_frames=3)
+    normal = _zones(hand=["1W"] * 14)
+    assert not machine.update(normal, True, True).allow_recommend
+    assert not machine.update(normal, True, True).allow_recommend
+    unknown_tile = _tile("2T", 200, "unknown_tiles")
+    unknown = _zones([unknown_tile], hand=["1W"] * 14)
+    assert machine.update(unknown, True, True).state == RegionState.UNCERTAIN
+    recovered = machine.update(normal, True, True)
+    assert recovered.reason == "waiting_for_structural_stability"
+    assert not recovered.allow_recommend
+
+
+def test_inferred_hand_frame_resets_structured_stability() -> None:
+    machine = StructuredStateMachine(minimum_stable_frames=2)
+    labels = ("1W", "1W", "2W", "2W", "3W", "3W", "4W", "4W", "5W", "5W", "6W", "6W", "7W", "8W")
+    observed = [_tile(label, index * 40) for index, label in enumerate(labels)]
+    normal = _zones(observed, hand=[tile.label for tile in observed])
+    machine.update(normal, True, True)
+    assert machine.update(normal, True, True).allow_recommend
+    inferred_tiles = [*observed[:-1], replace(observed[-1], inferred=True)]
+    inferred = _zones(inferred_tiles, hand=[tile.label for tile in inferred_tiles])
+    assert machine.update(inferred, True, True).state == RegionState.UNCERTAIN
+    assert not machine.update(normal, True, True).allow_recommend
+
+
+def test_final_zones_rebuild_all_derived_counts() -> None:
+    fusion = TableStateFusion()
+    pong = [_tile("3T", x, "bottom_melds") for x in (0, 40, 80)]
+    initial = fusion.update(_zones(pong))
+    extra_discard = _tile("8W", 300, "center_discards")
+    final_zones = replace(
+        initial,
+        center_discards=["8W"],
+        zone_tiles=[*initial.zone_tiles, extra_discard],
+    )
+    rebuilt = fusion.build_structured_state(final_zones)
+    assert rebuilt.zones is not final_zones
+    assert rebuilt.observed_visible_counts["8W"] == 1
+    assert rebuilt.logical_visible_counts["8W"] == 1
+    assert rebuilt.consistency_errors() == []
+
+
+def test_stale_visible_counts_are_detected() -> None:
+    fusion = TableStateFusion()
+    pong = [_tile("3T", x, "bottom_melds") for x in (0, 40, 80)]
+    fusion.update(_zones(pong))
+    stale = replace(fusion.last_state, observed_visible_counts={"9W": 4})
+    assert "observed_visible_counts_mismatch" in stale.consistency_errors()
+
+    stale = replace(fusion.last_state, logical_visible_counts={"9W": 4})
+    assert "logical_visible_counts_mismatch" in stale.consistency_errors()
+
+
+def test_logical_over_four_is_not_observed_hard_error() -> None:
+    fusion = TableStateFusion(meld_confirmation_frames=3)
+    pair = [_tile("7W", 0, "bottom_melds"), _tile("7W", 40, "bottom_melds")]
+    discards = [_tile("7W", 300, "center_discards"), _tile("7W", 350, "center_discards")]
+    hand = [_tile(f"{index % 9 + 1}T", 500 + index * 40) for index in range(13)]
+    zones = _zones([*pair, *discards, *hand], hand=[tile.label for tile in hand])
+    fusion.update(zones)
+    diagnostics = diagnose_zones(fusion.last_state.zones)
+    assert diagnostics.valid
+    assert diagnostics.logical_warnings
+
+
+def test_confirmed_meld_history_survives_one_missing_frame() -> None:
+    fusion = TableStateFusion(meld_confirmation_frames=3)
+    pong = [_tile("3T", x, "bottom_melds") for x in (0, 40, 80)]
+    fusion.update(_zones(pong))
+    assert fusion.last_state.meld_groups[0].kind == MeldKind.PONG
+    fusion.update(_zones())
+    assert fusion.last_state.meld_history_transient
+    fusion.update(_zones(pong))
+    assert fusion.last_state.meld_groups[0].kind == MeldKind.PONG

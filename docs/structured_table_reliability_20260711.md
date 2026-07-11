@@ -15,6 +15,12 @@ This round hardens structured table state only. It does not retrain YOLO, change
 - Suspected pong/kong groups do not affect confirmed open-meld counts until stable for three frames.
 - Fusion order is tracked zones, meld regrouping, cross-frame confirmation, unified state, validation, recommendation gate.
 - `StructuredTableState` owns zones, meld groups, counts, observed visibility, and logical visibility from one result.
+- After event classification, manual ROI overrides, and tile-limit reconciliation, the realtime pipeline rebuilds every derived field from the final zones before diagnostics or recommendation.
+- Structural stability counts only consecutive safe frames. Any uncertain, transient, or invalid frame resets the counter.
+- Stability signatures include track identity, inferred flags, position buckets, unknown/event/HU tiles, observed/logical counts, and diagnostic validity.
+- Hard count errors use observed tiles only. Logical completion overflow is reported as uncertainty instead of an impossible observed state.
+- Meld confirmation history survives a short whole-group detection gap, while recommendation remains transiently blocked.
+- Consistency checks recompute visibility counts and validate group IDs, logical sizes, memberships, and zone references.
 - The structured validator is a hard gate. Suspected melds, hand inference, unknown tiles, animations, count overflow, and inconsistency block strategy execution.
 - The realtime UI shows structured state, confirmed/suspected meld counts, inferred count, and blocking reason.
 
@@ -28,4 +34,10 @@ This round hardens structured table state only. It does not retrain YOLO, change
 
 ## Verification
 
-Regression tests cover hand-slot expiry, one-frame recovery, observed/logical count separation, suspected meld promotion, meld/list consistency, class jitter, zone-boundary crossing, and recommendation hard gating.
+Regression tests cover hand-slot expiry, one-frame recovery, observed/logical count separation, suspected meld promotion, meld/list consistency, class jitter, zone-boundary crossing, recommendation hard gating, final-state rebuilding, stale derived counts, safe-frame reset, and short whole-meld misses.
+
+## Deferred structural work
+
+- Confidence-weighted label voting inside a geometrically valid meld group.
+- Explicit legal zone-transition rules for global tile tracking.
+- Replay fixtures for adjacent meld and HU-display areas from real problem frames.

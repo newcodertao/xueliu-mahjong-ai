@@ -1,13 +1,22 @@
 from __future__ import annotations
 
 from collections import Counter
-from dataclasses import replace
+from dataclasses import dataclass, replace
 
 from xueliu_ai.table.hand_slot_tracker import HandSlotTracker
 from xueliu_ai.table.meld_grouper import group_melds
 from xueliu_ai.table.structured_types import MeldGroup, MeldKind, StructuredTableState, ZoneTile
 from xueliu_ai.table.tile_tracker import TileTracker
 from xueliu_ai.vision.detection_types import Detection
+
+
+@dataclass
+class MeldHistoryState:
+    stable_frames: int
+    missed_frames: int
+    last_center: tuple[float, float]
+    label: str
+    kind: MeldKind | None
 
 
 class TableStateFusion:
@@ -32,7 +41,8 @@ class TableStateFusion:
         self.tracker = TileTracker(max_missed=max_missed)
         self.hand_slots = HandSlotTracker(max_missed=max_missed)
         self.meld_confirmation_frames = meld_confirmation_frames
-        self._meld_history: dict[tuple, tuple[int, MeldKind | None]] = {}
+        self._meld_history: dict[tuple, MeldHistoryState] = {}
+        self._meld_history_gap = False
         self.last_state: StructuredTableState | None = None
 
     def update(self, zones, low_confidence_hand_tiles=None):
@@ -53,9 +63,16 @@ class TableStateFusion:
             observed = [tile for tile in by_zone[zone] if not tile.inferred]
             grouped = group_melds([_to_detection(tile) for tile in observed], zone, axis, source="fusion")
             meld_groups.extend(self._restore_and_confirm_groups(grouped.groups, observed))
-        self._meld_history = {
-            key: value for key, value in self._meld_history.items() if key in self._active_meld_keys
-        }
+        self._meld_history_gap = False
+        for key in list(self._meld_history):
+            if key in self._active_meld_keys:
+                continue
+            history = self._meld_history[key]
+            history.missed_frames += 1
+            if history.missed_frames > 2:
+                del self._meld_history[key]
+            else:
+                self._meld_history_gap = True
 
         logical_meld_tiles = [tile for group in meld_groups for tile in group.logical_tiles]
         untouched = [tile for tile in zones.zone_tiles if tile.zone not in self.tracked_zones]
@@ -76,18 +93,59 @@ class TableStateFusion:
             zone_tiles=zone_tiles,
             meld_groups=meld_groups,
         )
-        confirmed = sum(1 for group in meld_groups if group.zone == "bottom_melds" and group.is_confirmed)
-        suspected = sum(1 for group in meld_groups if group.zone == "bottom_melds" and group.is_suspected)
-        state = StructuredTableState(
-            zones=fused_zones,
+        state = self.build_structured_state(fused_zones)
+        self.last_state = state
+        return state.zones
+
+    def build_structured_state(self, final_zones) -> StructuredTableState:
+        """Rebuild every derived field from the final, post-processed zones."""
+        meld_groups = self._regroup_final_zones(final_zones)
+        meld_zone_names = set(self.meld_axes)
+        non_meld_tiles = [tile for tile in final_zones.zone_tiles if tile.zone not in meld_zone_names]
+        logical_meld_tiles = [tile for group in meld_groups for tile in group.logical_tiles]
+        rebuilt_zones = replace(
+            final_zones,
+            bottom_melds=_group_labels(meld_groups, "bottom_melds"),
+            left_melds=_group_labels(meld_groups, "left_melds"),
+            top_melds=_group_labels(meld_groups, "top_melds"),
+            right_melds=_group_labels(meld_groups, "right_melds"),
             meld_groups=meld_groups,
-            confirmed_open_melds=confirmed,
-            suspected_open_melds=suspected,
-            observed_visible_counts=_visible_counts(fused_zones, logical=False),
-            logical_visible_counts=_visible_counts(fused_zones, logical=True),
+            zone_tiles=[*non_meld_tiles, *logical_meld_tiles],
+        )
+        state = StructuredTableState(
+            zones=rebuilt_zones,
+            meld_groups=meld_groups,
+            confirmed_open_melds=sum(
+                1 for group in meld_groups if group.zone == "bottom_melds" and group.is_confirmed
+            ),
+            suspected_open_melds=sum(
+                1 for group in meld_groups if group.zone == "bottom_melds" and group.is_suspected
+            ),
+            observed_visible_counts=_visible_counts(rebuilt_zones, logical=False),
+            logical_visible_counts=_visible_counts(rebuilt_zones, logical=True),
+            meld_history_transient=self._meld_history_gap,
         )
         self.last_state = state
-        return fused_zones
+        return state
+
+    def _regroup_final_zones(self, zones) -> list[MeldGroup]:
+        rebuilt: list[MeldGroup] = []
+        source_groups = {_meld_key(group): group for group in zones.meld_groups}
+        for zone, axis in self.meld_axes.items():
+            observed = [
+                tile for tile in zones.zone_tiles if tile.zone == zone and not tile.inferred
+            ]
+            grouped = group_melds([_to_detection(tile) for tile in observed], zone, axis, source="final")
+            for group in grouped.groups:
+                group = replace(group, observed_tiles=_restore_observed_tiles(group, observed))
+                key = _meld_key(group)
+                prior = source_groups.get(key)
+                history = self._meld_history.get(key)
+                kind = prior.kind if prior is not None else group.kind
+                if history and history.kind in {MeldKind.PONG, MeldKind.KONG}:
+                    kind = history.kind
+                rebuilt.append(replace(group, kind=kind))
+        return rebuilt
 
     def _restore_and_confirm_groups(
         self,
@@ -100,8 +158,9 @@ class TableStateFusion:
             group = replace(group, observed_tiles=observed)
             key = _meld_key(group)
             self._active_meld_keys.add(key)
-            previous_frames, previous_kind = self._meld_history.get(key, (0, None))
-            frames = previous_frames + 1
+            previous = self._meld_history.get(key)
+            frames = (previous.stable_frames if previous else 0) + 1
+            previous_kind = previous.kind if previous else None
             kind = group.kind
             if group.is_suspected:
                 if previous_kind in {MeldKind.PONG, MeldKind.KONG}:
@@ -109,7 +168,14 @@ class TableStateFusion:
                 elif frames >= self.meld_confirmation_frames:
                     kind = MeldKind.PONG if group.kind == MeldKind.SUSPECTED_PONG else MeldKind.KONG
             confirmed_kind = kind if kind in {MeldKind.PONG, MeldKind.KONG} else previous_kind
-            self._meld_history[key] = (frames, confirmed_kind)
+            center = _meld_center(group)
+            self._meld_history[key] = MeldHistoryState(
+                stable_frames=frames,
+                missed_frames=0,
+                last_center=center,
+                label=group.label,
+                kind=confirmed_kind,
+            )
             result.append(replace(group, kind=kind))
         return result
 
@@ -144,6 +210,14 @@ def _meld_key(group: MeldGroup) -> tuple:
     center_y = sum(tile.center_y for tile in tiles) / max(1, len(tiles))
     size = max(20.0, sum(max(tile.width, tile.height) for tile in tiles) / max(1, len(tiles)))
     return group.zone, group.label, round(center_x / size), round(center_y / size)
+
+
+def _meld_center(group: MeldGroup) -> tuple[float, float]:
+    tiles = group.observed_tiles or group.logical_tiles
+    return (
+        sum(tile.center_x for tile in tiles) / max(1, len(tiles)),
+        sum(tile.center_y for tile in tiles) / max(1, len(tiles)),
+    )
 
 
 def _group_labels(groups: list[MeldGroup], zone: str) -> list[str]:
