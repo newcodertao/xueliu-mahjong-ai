@@ -1,5 +1,5 @@
 yolo:
-  model_path: models/yolo/xueliu_tiles_v1.pt
-  image_size: 640
-  confidence_threshold: 0.60
-  iou_threshold: 0.50
+  model_path: models/yolo/xueliu_final325_plus_longjing39_plus83_clean_v1_0709.pt
+  image_size: 1280
+  confidence_threshold: 0.75
+  iou_threshold: 0.45

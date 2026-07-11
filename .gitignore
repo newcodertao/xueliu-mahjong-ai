@@ -1,4 +1,10 @@
 .env
+*.env
+IP账号密码.txt
+*账号*
+*密码*
+*secret*
+*token*
 .venv/
 .venv-labeling/
 .pytest_cache/
@@ -22,3 +28,4 @@ reports/
 *.avi
 *.mov
 *.mkv
+*.exe

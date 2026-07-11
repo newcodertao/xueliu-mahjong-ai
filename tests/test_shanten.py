@@ -14,3 +14,8 @@ def test_seven_pairs() -> None:
 def test_best_shanten_number() -> None:
     tiles = ["1W", "2W", "3W", "4W", "5W", "6W", "7T", "8T", "9T", "2B", "3B", "4B", "9B"]
     assert best_shanten(tiles) <= 0
+
+
+def test_open_meld_shanten_uses_fixed_melds() -> None:
+    tiles = ["1W", "2W", "3W", "4W", "5W", "6W", "7T", "8T", "9T", "9B"]
+    assert best_shanten(tiles, open_melds=1) <= 0

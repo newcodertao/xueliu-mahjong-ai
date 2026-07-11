@@ -17,12 +17,16 @@ from xueliu_ai.dataset.video_pseudo_labeler import (
     probe_video,
     pseudo_label_frames,
 )
+from xueliu_ai.evaluation.replay_test import run_replay_test
+from xueliu_ai.evaluation.video_replay import replay_video
 from xueliu_ai.game_logging.game_logger import GameLogger
 from xueliu_ai.game_logging.review_report import generate_markdown_report, summarize_jsonl
 from xueliu_ai.mahjong.tiles import parse_tiles
 from xueliu_ai.realtime import run_realtime_loop
+from xueliu_ai.realtime_table import run_realtime_table_loop
 from xueliu_ai.strategy.discard_advisor import advise_discard
 from xueliu_ai.ui.debug_viewer import show_debug_image
+from xueliu_ai.ui.realtime_app import launch_realtime_app
 from xueliu_ai.vision.benchmark import benchmark_hand_folder
 from xueliu_ai.vision.detection_exporter import copy_hard_case, export_detection_result
 from xueliu_ai.vision.detection_validator import validate_hand_detections
@@ -121,6 +125,48 @@ def main(argv: list[str] | None = None) -> None:
     realtime.add_argument("--missing-suit", choices=["W", "T", "B", "w", "t", "b"])
     realtime.add_argument("--interval", type=float, default=0.5)
     realtime.add_argument("--limit", type=int)
+
+    realtime_table = subparsers.add_parser(
+        "realtime-table",
+        help="Run realtime full-table screenshot recognition, zone parsing and advice loop.",
+    )
+    realtime_table.add_argument(
+        "--model",
+        default="models/yolo/xueliu_final325_plus_longjing39_plus83_clean_v1_0709.pt",
+    )
+    realtime_table.add_argument("--missing-suit", choices=["W", "T", "B", "w", "t", "b"])
+    realtime_table.add_argument("--interval", type=float, default=0.25)
+    realtime_table.add_argument("--limit", type=int)
+    realtime_table.add_argument("--roi-name", default="table")
+    realtime_table.add_argument("--conf", type=float, default=0.75)
+    realtime_table.add_argument("--iou", type=float, default=0.45)
+    realtime_table.add_argument("--imgsz", type=int, default=1280)
+    realtime_table.add_argument("--no-show", action="store_true")
+    realtime_table.add_argument("--save-preview-dir")
+    realtime_table.add_argument("--log", default="data/games/realtime_table.jsonl")
+
+    video_replay = subparsers.add_parser("video-replay", help="Replay a video through the table recognizer and save diagnostics.")
+    video_replay.add_argument("--video", required=True)
+    video_replay.add_argument("--model", default="models/yolo/xueliu_final325_plus_longjing39_plus83_clean_v1_0709.pt")
+    video_replay.add_argument("--output", default="data/replays/latest")
+    video_replay.add_argument("--every-seconds", type=float, default=1.0)
+    video_replay.add_argument("--max-frames", type=int, default=120)
+    video_replay.add_argument("--conf", type=float, default=0.75)
+    video_replay.add_argument("--iou", type=float, default=0.45)
+    video_replay.add_argument("--imgsz", type=int, default=1280)
+    video_replay.add_argument("--roi-name", default="table")
+    video_replay.add_argument("--no-images", action="store_true")
+
+    replay_test = subparsers.add_parser("replay-test", help="Run curated gold-frame regression checks.")
+    replay_test.add_argument("--gold", default="data/gold_replay/gold_cases.json")
+    replay_test.add_argument("--model", default="models/yolo/xueliu_final325_plus_longjing39_plus83_clean_v1_0709.pt")
+    replay_test.add_argument("--output")
+    replay_test.add_argument("--conf", type=float, default=0.75)
+    replay_test.add_argument("--iou", type=float, default=0.45)
+    replay_test.add_argument("--imgsz", type=int, default=1280)
+    replay_test.add_argument("--no-images", action="store_true")
+
+    subparsers.add_parser("realtime-ui", help="Launch the realtime recognition and advice UI.")
 
     review = subparsers.add_parser("review", help="Summarize a JSONL game log.")
     review.add_argument("--log", default="data/games/session.jsonl")
@@ -237,6 +283,47 @@ def main(argv: list[str] | None = None) -> None:
             interval_seconds=args.interval,
             limit=args.limit,
         )
+    elif args.command == "realtime-table":
+        run_realtime_table_loop(
+            model_path=args.model,
+            missing_suit=args.missing_suit,
+            interval_seconds=args.interval,
+            limit=args.limit,
+            roi_name=args.roi_name,
+            conf=args.conf,
+            iou=args.iou,
+            imgsz=args.imgsz,
+            show=not args.no_show,
+            save_preview_dir=args.save_preview_dir,
+            log_path=args.log,
+        )
+    elif args.command == "video-replay":
+        summary = replay_video(
+            video_path=args.video,
+            model_path=args.model,
+            output_dir=args.output,
+            every_seconds=args.every_seconds,
+            max_frames=args.max_frames,
+            conf=args.conf,
+            iou=args.iou,
+            imgsz=args.imgsz,
+            save_images=not args.no_images,
+            roi_name=args.roi_name,
+        )
+        print(json.dumps(summary.__dict__, ensure_ascii=False, indent=2))
+    elif args.command == "replay-test":
+        summary = run_replay_test(
+            gold_path=args.gold,
+            model_path=args.model,
+            output_dir=args.output,
+            conf=args.conf,
+            iou=args.iou,
+            imgsz=args.imgsz,
+            save_images=not args.no_images,
+        )
+        print(json.dumps(summary.__dict__, ensure_ascii=False, indent=2))
+    elif args.command == "realtime-ui":
+        launch_realtime_app()
     elif args.command == "review":
         print(json.dumps(summarize_jsonl(args.log), ensure_ascii=False, indent=2))
     elif args.command == "report":

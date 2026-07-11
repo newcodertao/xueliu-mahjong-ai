@@ -11,7 +11,7 @@ from ultralytics import YOLO
 
 
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
-TARGET_NAMES = [f"{rank}{suit}" for suit in ("W", "T", "B") for rank in range(1, 10)]
+TARGET_NAMES = [f"{rank}{suit}" for suit in ("W", "B", "T") for rank in range(1, 10)]
 TARGET_INDEX = {name: index for index, name in enumerate(TARGET_NAMES)}
 
 

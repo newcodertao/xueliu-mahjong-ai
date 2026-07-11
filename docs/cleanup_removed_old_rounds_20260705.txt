@@ -1,0 +1,9 @@
+﻿datasets\xueliu_manual39_clean_v1
+datasets\xueliu_manual113_clean_v2_0702
+datasets\xueliu_manual222_clean_v3_0703
+runs\detect\manual39_clean_v1_high_precision
+runs\detect\manual113_clean_v2_0702_high_precision
+runs\detect\manual222_clean_v3_0703_high_precision
+models\yolo\xueliu_manual39_clean_v1.pt
+models\yolo\xueliu_manual113_clean_v2_0702.pt
+models\yolo\xueliu_manual222_clean_v3_0703.pt

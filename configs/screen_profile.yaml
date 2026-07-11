@@ -3,11 +3,46 @@ screen:
   width: null
   height: null
 rois:
+  table:
+    x: 290
+    y: 228
+    width: 1650
+    height: 877
   my_hand:
-    x: 849
-    y: 1507
-    width: 2157
-    height: 228
+    x: 503
+    y: 982
+    width: 1089
+    height: 110
+  my_play_area:
+    x: 456
+    y: 964
+    width: 1339
+    height: 132
+  my_melds:
+    x: 1464
+    y: 977
+    width: 355
+    height: 127
+  left_melds:
+    x: 330
+    y: 527
+    width: 164
+    height: 347
+  right_melds:
+    x: 1594
+    y: 256
+    width: 174
+    height: 176
+  top_melds:
+    x: 1638
+    y: 657
+    width: 418
+    height: 98
+  discards:
+    x: 773
+    y: 381
+    width: 696
+    height: 551
   drawn_tile:
     x: 0
     y: 0

@@ -5,9 +5,9 @@ from functools import lru_cache
 from xueliu_ai.mahjong.tiles import tiles_to_counts
 
 
-def normal_shanten(tiles: list[str]) -> int:
+def normal_shanten(tiles: list[str], open_melds: int = 0) -> int:
     counts = tuple(tiles_to_counts(tiles))
-    return _normal_shanten_counts(counts)
+    return _normal_shanten_counts(counts, open_melds)
 
 
 def seven_pairs_shanten(tiles: list[str]) -> int:
@@ -18,21 +18,25 @@ def seven_pairs_shanten(tiles: list[str]) -> int:
     return max(0, 6 - pairs + need_unique)
 
 
-def best_shanten(tiles: list[str]) -> int:
-    return min(normal_shanten(tiles), seven_pairs_shanten(tiles))
+def best_shanten(tiles: list[str], open_melds: int = 0) -> int:
+    normal = normal_shanten(tiles, open_melds)
+    if open_melds:
+        return normal
+    return min(normal, seven_pairs_shanten(tiles))
 
 
 @lru_cache(maxsize=200_000)
-def _normal_shanten_counts(counts: tuple[int, ...]) -> int:
+def _normal_shanten_counts(counts: tuple[int, ...], open_melds: int = 0) -> int:
     best = 8
+    target_melds = max(0, 4 - open_melds)
 
     def walk(state: list[int], start: int, melds: int, taatsu: int, pair: int) -> None:
         nonlocal best
         while start < 27 and state[start] == 0:
             start += 1
         if start >= 27:
-            usable_taatsu = min(taatsu, 4 - melds)
-            value = 8 - melds * 2 - usable_taatsu - pair
+            usable_taatsu = min(taatsu, max(0, target_melds - melds))
+            value = 8 - (melds + open_melds) * 2 - usable_taatsu - pair
             best = min(best, value)
             return
 

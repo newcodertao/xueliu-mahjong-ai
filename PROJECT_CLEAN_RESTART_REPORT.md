@@ -62,9 +62,9 @@
 | 外部源 | 图片 | 框数 | 类别数 | 来源 | 建议 |
 | --- | ---: | ---: | ---: | --- | --- |
 | `roboflow_mahjong` | 7650 | 116169 | 42 | Jon Chan Mahjong v83 | 只抽样人工审核，不直接训练 |
-| `roboflow_chinese_mahjong_detection_v4` | 4456 | 76890 | 42 | Chinese Mahjong Detection v4 | 只抽样人工审核，不直接训练 |
-| `roboflow_mahjong_tiles_merged_v1` | 3942 | 65661 | 42 | Mahjong Tiles Merged v1 | 只抽样人工审核，不直接训练 |
-| `roboflow_yolo_mahjong_v7` | 4012 | 11405 | 38 | YOLO Mahjong v7 | 只抽样人工审核，不直接训练 |
+| `roboflow_chinese_mahjong_detection_v4` | 4456 | 76890 | 42 | Chinese Mahjong Detection v4 | 用户抽查准确度很差，禁用；不进入 clean 训练 |
+| `roboflow_mahjong_tiles_merged_v1` | 3942 | 65661 | 42 | Mahjong Tiles Merged v1 | 用户抽查准确度很差，禁用；不进入 clean 训练 |
+| `roboflow_yolo_mahjong_v7` | 4012 | 11405 | 38 | YOLO Mahjong v7 | 用户抽查准确度很差，禁用；不进入 clean 训练 |
 | `roboflow_riichi_mahjong_tiles_v1` | 256 | 6644 | 34 | 日麻牌数据 | 和目标平台差异大，不建议主用 |
 | `roboflow_majsoul_v1` | 137 | 1782 | 37 | 雀魂数据 | 平台差异大，不建议主用 |
 | `roboflow_mahjong_tiles_oc9zz_v11` | 55 | 1798 | 34 | 小数据集 | 价值有限 |

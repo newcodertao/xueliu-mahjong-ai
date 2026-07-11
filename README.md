@@ -31,10 +31,10 @@ python -m pip install -e .[dev]
 python -m xueliu_ai build-dataset
 python -m xueliu_ai collect --interval 1 --limit 10
 python -m xueliu_ai manifest
-python -m xueliu_ai detect --model models/yolo/xueliu_tiles_v1.pt --source data/raw/my_hand
-python -m xueliu_ai benchmark --model models/yolo/xueliu_tiles_v1.pt
+python -m xueliu_ai detect --model models/yolo/xueliu_final325_plus_longjing39_plus83_clean_v1_0709.pt --source data/raw/my_hand
+python -m xueliu_ai benchmark --model models/yolo/xueliu_final325_plus_longjing39_plus83_clean_v1_0709.pt
 python -m xueliu_ai advise --hand 1W,2W,3W,4W,5W,6W,7T,8T,9T,2B,3B,4B,9B,9B --missing-suit W
-python -m xueliu_ai realtime --model models/yolo/xueliu_tiles_v1.pt --missing-suit W
+python -m xueliu_ai realtime --model models/yolo/xueliu_final325_plus_longjing39_plus83_clean_v1_0709.pt --missing-suit W
 python -m xueliu_ai debug-viewer --image data/raw/fullscreen/example.png
 python -m xueliu_ai report --log data/games/session.jsonl
 pytest
@@ -47,7 +47,7 @@ pytest
 - 先运行 `python -m xueliu_ai roi-calibrate --name my_hand` 标定手牌区域。
 - 再运行 `python -m xueliu_ai collect --interval 0.5 --limit 200` 采集手牌截图。
 - 把采集到的 `data/raw/my_hand` 图片用 CVAT、Roboflow 或 Label Studio 标注为 YOLO 格式。
-- 将训练出的模型放到 `models/yolo/xueliu_tiles_v1.pt`。
+- 当前运行主模型为 `models/yolo/xueliu_final325_plus_longjing39_plus83_clean_v1_0709.pt`。
 
 ## 边界
 

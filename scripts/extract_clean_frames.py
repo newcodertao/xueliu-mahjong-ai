@@ -18,7 +18,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--video-root", default=r"G:\video")
     parser.add_argument("--real-test-video", default=r"G:\video\2026-06-29 15-42-34.mp4")
     parser.add_argument("--train-output", required=True)
-    parser.add_argument("--test-output", required=True)
+    parser.add_argument("--test-output", default="")
     parser.add_argument("--train-count", type=int, default=400)
     parser.add_argument("--test-count", type=int, default=100)
     parser.add_argument("--start-margin-seconds", type=float, default=5.0)
@@ -27,6 +27,12 @@ def parse_args() -> argparse.Namespace:
         "--test-from-other-videos",
         action="store_true",
         help="Build the test output from all videos except --real-test-video.",
+    )
+    parser.add_argument(
+        "--exclude-name",
+        action="append",
+        default=[],
+        help="Exclude a video whose filename contains this text. Can be passed multiple times.",
     )
     parser.add_argument("--overwrite", action="store_true")
     return parser.parse_args()
@@ -37,39 +43,52 @@ def main() -> None:
     video_root = Path(args.video_root)
     real_test_video = Path(args.real_test_video)
     train_output = Path(args.train_output)
-    test_output = Path(args.test_output)
+    test_output = Path(args.test_output) if args.test_output else None
 
     if not video_root.exists():
         raise FileNotFoundError(video_root)
-    if not real_test_video.exists():
+    if args.test_count > 0 and not real_test_video.exists():
         raise FileNotFoundError(real_test_video)
 
     all_videos = sorted(
         path for path in video_root.rglob("*") if path.is_file() and path.suffix.lower() in VIDEO_SUFFIXES
     )
-    train_videos = [path for path in all_videos if path.resolve() != real_test_video.resolve()]
+    if args.exclude_name:
+        all_videos = [
+            path
+            for path in all_videos
+            if not any(excluded in path.name for excluded in args.exclude_name)
+        ]
+    train_videos = [
+        path for path in all_videos if not real_test_video.exists() or path.resolve() != real_test_video.resolve()
+    ]
     if not train_videos:
         raise RuntimeError("No training videos found after excluding the real test video.")
 
     prepare_output(train_output, args.overwrite)
-    prepare_output(test_output, args.overwrite)
+    if args.test_count > 0:
+        if test_output is None:
+            raise ValueError("--test-output is required when --test-count is greater than 0.")
+        prepare_output(test_output, args.overwrite)
 
-    real_test_info = probe_video(real_test_video)
+    real_test_info = probe_video(real_test_video) if real_test_video.exists() else None
     train_infos = [info for video in train_videos if (info := probe_video(video)).opened and info.duration > 0]
-    test_infos = train_infos if args.test_from_other_videos else [real_test_info]
-    if not real_test_info.opened:
+    test_infos = train_infos if args.test_from_other_videos else ([real_test_info] if real_test_info else [])
+    if args.test_count > 0 and real_test_info and not real_test_info.opened:
         raise RuntimeError(f"Cannot open test video: {real_test_video}")
-    if not test_infos:
+    if args.test_count > 0 and not test_infos:
         raise RuntimeError("No usable videos found for test extraction.")
 
-    test_rows = extract_from_videos(
-        test_infos,
-        test_output,
-        args.test_count,
-        prefix="aux" if args.test_from_other_videos else "gold",
-        start_margin=args.start_margin_seconds,
-        end_margin=args.end_margin_seconds,
-    )
+    test_rows: list[dict[str, object]] = []
+    if args.test_count > 0 and test_output is not None:
+        test_rows = extract_from_videos(
+            test_infos,
+            test_output,
+            args.test_count,
+            prefix="aux" if args.test_from_other_videos else "gold",
+            start_margin=args.start_margin_seconds,
+            end_margin=args.end_margin_seconds,
+        )
     train_rows = extract_from_videos(
         train_infos,
         train_output,
@@ -80,16 +99,19 @@ def main() -> None:
     )
 
     write_common_files(train_output, train_rows, train_infos, "Clean manual training candidates.")
-    write_common_files(test_output, test_rows, test_infos, "Clean gold test candidates; never train on these.")
+    if args.test_count > 0 and test_output is not None:
+        write_common_files(test_output, test_rows, test_infos, "Clean gold test candidates; never train on these.")
 
-    print(f"test_images={len(test_rows)} output={test_output}")
+    if args.test_count > 0:
+        print(f"test_images={len(test_rows)} output={test_output}")
     print(f"train_images={len(train_rows)} output={train_output}")
     print("train_videos:")
     for info in train_infos:
         print(f"- {info.path} duration={info.duration:.1f}s frames={info.frames} fps={info.fps:.3f}")
-    print("test_videos:")
-    for info in test_infos:
-        print(f"- {info.path} duration={info.duration:.1f}s frames={info.frames} fps={info.fps:.3f}")
+    if args.test_count > 0:
+        print("test_videos:")
+        for info in test_infos:
+            print(f"- {info.path} duration={info.duration:.1f}s frames={info.frames} fps={info.fps:.3f}")
 
 
 class VideoInfo:

@@ -28,23 +28,27 @@ def advise_discard(
     tiles: list[str],
     missing_suit: str | None = None,
     visible_counts: dict[str, int] | None = None,
+    open_melds: int = 0,
 ) -> DiscardAdvice:
-    validate_tiles(tiles, allow_13_or_14=True)
-    if len(tiles) != 14:
-        raise ValueError(f"Discard advice needs 14 tiles, got {len(tiles)}")
+    validate_tiles(tiles)
+    expected = 14 - open_melds * 3
+    if len(tiles) != expected:
+        raise ValueError(f"出牌建议需要摸牌后的暗手牌 {expected} 张，当前 {len(tiles)} 张")
 
     candidates: list[DiscardCandidate] = []
     restricted = legal_discards(tiles, missing_suit)
     for tile in restricted:
         after = tiles.copy()
         after.remove(tile)
-        shanten = best_shanten(after)
-        ukeire = effective_draw_count(after, visible_counts)
-        score = -shanten * 100 + ukeire * 2 + _shape_score(after, tile, missing_suit)
-        reason = f"打出后向听 {shanten}，有效进张 {ukeire} 枚"
+        shanten = best_shanten(after, open_melds=open_melds)
+        ukeire = effective_draw_count(after, visible_counts, open_melds=open_melds)
+        seen = (visible_counts or {}).get(tile, 0)
+        remaining = max(0, 4 - seen - tiles.count(tile))
+        score = -shanten * 100 + ukeire * 2 + _shape_score(after, tile, missing_suit) + seen * 1.5
+        reason = f"打出后向听 {shanten}，有效进张 {ukeire}，外面已见 {seen} 张，本手外剩余约 {remaining} 张"
         if missing_suit and tile_suit(tile) == missing_suit.upper():
             score += 1000
-            reason = f"优先处理定缺门；{reason}"
+            reason = f"优先处理定缺花色；{reason}"
         candidates.append(DiscardCandidate(tile, score, shanten, ukeire, reason))
 
     candidates.sort(key=lambda item: (item.score, item.ukeire, -_terminal_penalty(item.tile)), reverse=True)
