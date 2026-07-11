@@ -16,6 +16,7 @@ from xueliu_ai.mahjong.tiles import TILE_SET
 from xueliu_ai.strategy.discard_advisor import advise_discard
 from xueliu_ai.table.meld_grouper import group_melds
 from xueliu_ai.table.structured_types import MeldGroup, ZoneTile
+from xueliu_ai.table.zone_assigner import assign_by_roi_priority
 from xueliu_ai.vision.detection_types import Detection
 from xueliu_ai.vision.detection_validator import non_max_suppression
 from xueliu_ai.vision.yolo_detector import YoloDetector
@@ -40,6 +41,14 @@ class TableZones:
     zone_tiles: list[ZoneTile] = field(default_factory=list)
     meld_groups: list[MeldGroup] = field(default_factory=list)
 
+    @property
+    def confirmed_open_melds(self) -> int:
+        return sum(1 for group in self.meld_groups if group.zone == "bottom_melds" and group.is_confirmed)
+
+    @property
+    def suspected_open_melds(self) -> int:
+        return sum(1 for group in self.meld_groups if group.zone == "bottom_melds" and group.is_suspected)
+
     def to_dict(self) -> dict[str, object]:
         return {
             "hand": self.hand,
@@ -58,6 +67,8 @@ class TableZones:
             "all_tiles": self.all_tiles,
             "zone_tiles": [tile.to_dict() for tile in self.zone_tiles],
             "meld_groups": [group.to_dict() for group in self.meld_groups],
+            "confirmed_open_melds": self.confirmed_open_melds,
+            "suspected_open_melds": self.suspected_open_melds,
         }
 
 
@@ -492,8 +503,6 @@ def classify_table_zones_by_rois(
         "top_melds": "top_melds",
         "discards": "center_discards",
     }
-    priority = ["my_hand", "my_melds", "discards", "left_melds", "top_melds", "right_melds"]
-
     active_rois = {
         name: roi
         for name, roi in rois.items()
@@ -503,19 +512,11 @@ def classify_table_zones_by_rois(
         return classify_table_zones(detections, width, height)
 
     for det in detections:
-        screen_x = table_roi.x + det.center_x
-        screen_y = table_roi.y + (det.y1 + det.y2) / 2
-        assigned = False
-        for roi_name in priority:
-            roi = active_rois.get(roi_name)
-            if not roi:
-                continue
-            if _point_in_roi(screen_x, screen_y, roi):
-                buckets[mapping[roi_name]].append(det)
-                assigned = True
-                break
-        if not assigned:
+        assignment = assign_by_roi_priority(det, table_roi, active_rois)
+        if assignment is None:
             unknown.append(det)
+        else:
+            buckets[assignment.zone].append(det)
 
     fallback = classify_table_zones(unknown, width, height)
     bottom_meld_zone, bottom_isolated, bottom_groups = _split_meld_zone_tiles(buckets["bottom_melds"], "bottom_melds", axis="horizontal", source="manual_roi")
@@ -586,23 +587,41 @@ def classify_table_zones_by_rois(
 
 def visible_counts_from_zones(zones: TableZones, include_hand: bool = False) -> dict[str, int]:
     visible: list[str] = []
+    if not zones.zone_tiles and not zones.meld_groups:
+        if include_hand:
+            visible.extend(zones.hand)
+        visible.extend(zones.bottom_melds)
+        visible.extend(zones.left_melds)
+        visible.extend(zones.right_melds)
+        visible.extend(zones.top_melds)
+        visible.extend(zones.center_discards)
+        return dict(Counter(visible))
+    if include_hand:
+        visible.extend(tile.label for tile in zones.zone_tiles if tile.zone == "hand" and not tile.inferred)
+    visible.extend(
+        tile.label
+        for group in zones.meld_groups
+        for tile in group.observed_only_tiles
+    )
+    visible.extend(
+        tile.label
+        for tile in zones.zone_tiles
+        if tile.zone == "center_discards" and not tile.inferred
+    )
+    return dict(Counter(visible))
+
+
+def logical_visible_counts_from_zones(zones: TableZones, include_hand: bool = False) -> dict[str, int]:
+    visible: list[str] = []
     if include_hand:
         visible.extend(zones.hand)
-    visible.extend(zones.bottom_melds)
-    visible.extend(zones.left_melds)
-    visible.extend(zones.right_melds)
-    visible.extend(zones.top_melds)
-    visible.extend(zones.center_discards)
+    visible.extend(tile.label for group in zones.meld_groups for tile in group.logical_tiles)
+    visible.extend(tile.label for tile in zones.zone_tiles if tile.zone == "center_discards")
     return dict(Counter(visible))
 
 
 def reconcile_zone_tile_limits(zones: TableZones) -> TableZones:
-    visible_counts = Counter()
-    visible_counts.update(zones.bottom_melds)
-    visible_counts.update(zones.left_melds)
-    visible_counts.update(zones.right_melds)
-    visible_counts.update(zones.top_melds)
-    visible_counts.update(zones.center_discards)
+    visible_counts = Counter(visible_counts_from_zones(zones, include_hand=False))
 
     remaining_by_tile = {tile: max(0, 4 - visible_counts[tile]) for tile in TILE_SET}
     kept_hand: list[str] = []
@@ -1079,4 +1098,8 @@ def _open_melds_from_concealed_count(count: int) -> int:
 
 
 def _open_melds_from_groups(groups: list[MeldGroup], zone: str) -> int:
-    return min(4, sum(group.open_meld_count for group in groups if group.zone == zone))
+    return min(4, sum(group.open_meld_count for group in groups if group.zone == zone and group.is_confirmed))
+
+
+def _suspected_open_melds_from_groups(groups: list[MeldGroup], zone: str) -> int:
+    return min(4, sum(group.open_meld_count for group in groups if group.zone == zone and group.is_suspected))

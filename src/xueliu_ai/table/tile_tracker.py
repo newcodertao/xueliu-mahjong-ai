@@ -54,15 +54,15 @@ class TileTracker:
         scale = max(tile.width, tile.height)
         for track_id in candidates:
             previous = self._tracks[track_id].tile
-            if previous.label != tile.label or previous.zone != tile.zone:
-                continue
             distance = ((previous.center_x - tile.center_x) ** 2 + (previous.center_y - tile.center_y) ** 2) ** 0.5
             if distance > scale * self.max_center_distance:
                 continue
             size_ratio = max(previous.width / tile.width, tile.width / previous.width, previous.height / tile.height, tile.height / previous.height)
             if size_ratio > 1.8:
                 continue
-            score = distance / scale + (1.0 - _iou(previous, tile))
+            label_penalty = 0.35 if previous.label != tile.label else 0.0
+            zone_penalty = 0.2 if previous.zone != tile.zone else 0.0
+            score = distance / scale + (1.0 - _iou(previous, tile)) + label_penalty + zone_penalty
             if best is None or score < best[0]:
                 best = (score, track_id)
         return best[1] if best else None

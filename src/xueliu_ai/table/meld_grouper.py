@@ -87,7 +87,7 @@ def _make_group(
         zone=zone,
         kind=kind,
         label=label,
-        tiles=tiles,
+        observed_tiles=tiles,
         inferred_tiles=inferred,
         confidence=confidence,
         axis=axis,

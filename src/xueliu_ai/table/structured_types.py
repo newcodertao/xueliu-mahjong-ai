@@ -125,7 +125,7 @@ class MeldGroup:
     zone: str
     kind: MeldKind
     label: str
-    tiles: list[ZoneTile] = field(default_factory=list)
+    observed_tiles: list[ZoneTile] = field(default_factory=list)
     inferred_tiles: list[ZoneTile] = field(default_factory=list)
     confidence: float = 0.0
     axis: str = "horizontal"
@@ -133,7 +133,23 @@ class MeldGroup:
 
     @property
     def all_tiles(self) -> list[ZoneTile]:
-        return [*self.tiles, *self.inferred_tiles]
+        return self.logical_tiles
+
+    @property
+    def observed_count(self) -> int:
+        return len(self.observed_tiles)
+
+    @property
+    def logical_count(self) -> int:
+        return len(self.logical_tiles)
+
+    @property
+    def observed_only_tiles(self) -> list[ZoneTile]:
+        return list(self.observed_tiles)
+
+    @property
+    def logical_tiles(self) -> list[ZoneTile]:
+        return [*self.observed_tiles, *self.inferred_tiles]
 
     @property
     def open_meld_count(self) -> int:
@@ -156,7 +172,41 @@ class MeldGroup:
             "confidence": self.confidence,
             "axis": self.axis,
             "reason": self.reason,
-            "tiles": [tile.to_dict() for tile in self.tiles],
+            "observed_tiles": [tile.to_dict() for tile in self.observed_tiles],
             "inferred_tiles": [tile.to_dict() for tile in self.inferred_tiles],
             "open_meld_count": self.open_meld_count,
         }
+
+
+@dataclass(frozen=True)
+class StructuredTableState:
+    zones: object
+    meld_groups: list[MeldGroup]
+    confirmed_open_melds: int
+    suspected_open_melds: int
+    observed_visible_counts: dict[str, int]
+    logical_visible_counts: dict[str, int]
+
+    @property
+    def inferred_tile_count(self) -> int:
+        return sum(len(group.inferred_tiles) for group in self.meld_groups) + sum(
+            1 for tile in getattr(self.zones, "zone_tiles", []) if tile.zone == "hand" and tile.inferred
+        )
+
+    def consistency_errors(self) -> list[str]:
+        confirmed = sum(1 for group in self.meld_groups if group.zone == "bottom_melds" and group.is_confirmed)
+        suspected = sum(1 for group in self.meld_groups if group.zone == "bottom_melds" and group.is_suspected)
+        errors: list[str] = []
+        if self.confirmed_open_melds != confirmed:
+            errors.append("confirmed_open_meld_count_mismatch")
+        if self.suspected_open_melds != suspected:
+            errors.append("suspected_open_meld_count_mismatch")
+        for group in self.meld_groups:
+            zone_labels = [
+                tile.label
+                for tile in getattr(self.zones, "zone_tiles", [])
+                if tile.zone == group.zone and tile.group_id == group.group_id
+            ]
+            if sorted(zone_labels) != sorted(tile.label for tile in group.logical_tiles):
+                errors.append(f"meld_zone_tiles_mismatch:{group.group_id}")
+        return errors

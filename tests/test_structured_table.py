@@ -1,10 +1,13 @@
 from xueliu_ai.realtime_table import TableZones, diagnose_zones
-from xueliu_ai.table.event_classifier import classify_isolated_tile
+from xueliu_ai.capture.roi_config import Roi
+from xueliu_ai.table.event_classifier import EventTileClassifier, classify_isolated_tile
 from xueliu_ai.table.hand_slot_tracker import HandSlotTracker
 from xueliu_ai.table.meld_grouper import group_melds
-from xueliu_ai.table.state_validator import validate_structured_state
+from xueliu_ai.table.state_fusion import TableStateFusion
+from xueliu_ai.table.state_validator import StructuredStateMachine, validate_structured_state
 from xueliu_ai.table.structured_types import MeldKind, RegionState, ZoneTile
 from xueliu_ai.table.tile_tracker import TileTracker
+from xueliu_ai.table.zone_assigner import assign_by_roi_priority
 from xueliu_ai.vision.detection_types import Detection
 
 
@@ -84,3 +87,50 @@ def test_event_animation_blocks_recommendation() -> None:
     result = validate_structured_state(zones, phase_stable=True, consecutive_stable_frames=5)
     assert result.state == RegionState.TRANSIENT
     assert not result.allow_recommend
+
+
+def test_roi_priority_assigns_overlap_to_hand() -> None:
+    detection = _det("1W", 100, 100)
+    table = Roi(100, 100, 1000, 800)
+    rois = {
+        "my_hand": Roi(180, 180, 200, 200),
+        "my_melds": Roi(180, 180, 200, 200),
+    }
+    assignment = assign_by_roi_priority(detection, table, rois)
+    assert assignment is not None
+    assert assignment.zone == "hand"
+
+
+def test_low_confidence_candidate_fills_actual_middle_slot() -> None:
+    fusion = TableStateFusion(max_missed=2)
+    full = [_tile(label, x) for label, x in zip(("1W", "2W", "3W", "4W"), (0, 40, 80, 120))]
+    fusion.update(_zones(hand=[tile.label for tile in full], zone_tiles=full))
+    current = [full[0], full[1], full[3]]
+    candidate = ZoneTile("3W", 0.61, 80, 100, 116, 152, "hand")
+    result = fusion.update(
+        _zones(hand=[tile.label for tile in current], zone_tiles=current),
+        low_confidence_hand_tiles=[candidate],
+    )
+    restored = sorted((tile for tile in result.zone_tiles if tile.zone == "hand"), key=lambda tile: tile.center_x)
+    assert [tile.label for tile in restored] == ["1W", "2W", "3W", "4W"]
+    assert restored[2].reason == "low_confidence_slot_candidate"
+
+
+def test_isolated_tile_transitions_from_animation_to_stable_hu() -> None:
+    classifier = EventTileClassifier(hu_stable_frames=3)
+    tile = ZoneTile("7W", 0.9, 20, 200, 56, 252, "unknown_tiles")
+    states = []
+    zones = _zones(unknown_tiles=["7W"], zone_tiles=[tile])
+    for _ in range(3):
+        result = classifier.update(zones, width=1000, height=800)
+        states.append((result.event_tiles, result.hu_display_tiles))
+    assert states[:2] == [(["7W"], []), (["7W"], [])]
+    assert states[2] == ([], ["7W"])
+
+
+def test_structured_state_machine_requires_consecutive_stability() -> None:
+    machine = StructuredStateMachine(minimum_stable_frames=3)
+    zones = _zones(hand=["1W"] * 14)
+    states = [machine.update(zones, phase_stable=True, diagnostics_valid=True) for _ in range(3)]
+    assert [state.state for state in states] == [RegionState.UNCERTAIN, RegionState.UNCERTAIN, RegionState.CONFIRMED]
+    assert states[-1].allow_recommend

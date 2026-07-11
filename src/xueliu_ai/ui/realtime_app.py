@@ -7,7 +7,7 @@ import threading
 import time
 import tkinter as tk
 from collections import Counter, deque
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from tkinter import ttk
 
@@ -29,9 +29,11 @@ from xueliu_ai.realtime_table import (
     visible_counts_from_zones,
 )
 from xueliu_ai.strategy.discard_advisor import DiscardAdvice, advise_discard
-from xueliu_ai.table.game_phase import PhaseContext, should_allow_recommend
+from xueliu_ai.table.event_classifier import EventTileClassifier
+from xueliu_ai.table.game_phase import GamePhase, PhaseContext, should_allow_recommend
 from xueliu_ai.table.my_area import analyze_my_area
 from xueliu_ai.table.state_fusion import TableStateFusion
+from xueliu_ai.table.state_validator import StructuredStateMachine, combine_recommendation_gates
 from xueliu_ai.vision.detection_types import Detection
 from xueliu_ai.vision.detection_validator import non_max_suppression
 from xueliu_ai.vision.yolo_detector import YoloDetector
@@ -73,6 +75,7 @@ class RealtimeApp:
         self.shape_var = tk.StringVar(value="-")
         self.zone_var = tk.StringVar(value="-")
         self.visible_var = tk.StringVar(value="-")
+        self.structured_var = tk.StringVar(value="-")
         self.roi_summary_var = tk.StringVar(value="-")
 
         self._build_layout()
@@ -159,6 +162,7 @@ class RealtimeApp:
         self._result_row(results, "可见牌", self.visible_var)
 
         ttk.Label(results, text="候选建议").pack(anchor=tk.W, pady=(12, 2))
+        self._result_row(results, "Structured state", self.structured_var)
         self.candidate_text = tk.Text(results, height=12, wrap=tk.WORD)
         self.candidate_text.pack(fill=tk.BOTH, expand=True)
 
@@ -210,10 +214,11 @@ class RealtimeApp:
             self.events.put({"type": "status", "message": "正在加载 YOLO 模型..."})
             detector = YoloDetector(self.model_var.get(), image_size=int(self.imgsz_var.get()))
             logger = GameLogger("data/games/realtime_ui.jsonl")
-            stabilizer = RealtimeStateStabilizer(window_size=max(1, int(self.smoothing_frames_var.get())))
-            stable_hand = StableHand()
+            stable_hand = StableHand(stable_frames=max(1, int(self.smoothing_frames_var.get())))
             region_state = RegionStateMachine()
+            structured_state = StructuredStateMachine(minimum_stable_frames=3)
             structural_fusion = TableStateFusion(max_missed=2)
+            event_classifier = EventTileClassifier(hu_stable_frames=3, max_missed=2)
             roi_editor = PreviewRoiEditor()
             hard_case_recorder = HardCaseRecorder()
             preview_callback_bound = False
@@ -246,15 +251,11 @@ class RealtimeApp:
                         table_image.shape[1],
                         table_image.shape[0],
                     )
-                zones = _recover_auto_hand_with_lower_confidence(
-                    zones,
-                    detector,
-                    table_image,
-                    conf,
-                    iou,
-                    enabled=self.auto_zones_var.get(),
+                low_hand_candidates = _low_confidence_hand_candidates(
+                    detector, table_image, conf, iou, enabled=self.auto_zones_var.get()
                 )
-                zones = structural_fusion.update(zones)
+                zones = structural_fusion.update(zones, low_hand_candidates)
+                zones = event_classifier.update(zones, table_image.shape[1], table_image.shape[0])
 
                 hand_tiles = zones.hand
                 play_roi = profile.rois.get("my_play_area")
@@ -272,7 +273,6 @@ class RealtimeApp:
 
                 raw_hand_tiles = hand_tiles
                 raw_zones = zones
-                zones, hand_tiles = stabilizer.update(zones, hand_tiles)
                 zones = reconcile_zone_tile_limits(zones)
                 hand_tiles = zones.hand
                 use_table_context = self.use_table_context_var.get()
@@ -296,6 +296,25 @@ class RealtimeApp:
                         allow=False,
                         reasons=[*decision.reasons, f"region_state:{region_check.reason}"],
                     )
+                structured_table_state = replace(structural_fusion.last_state, zones=zones)
+                structure_check = structured_state.update(
+                    structured_table_state,
+                    phase_stable=decision.phase in {GamePhase.WAITING, GamePhase.MY_TURN},
+                    diagnostics_valid=diagnostics.valid,
+                )
+                if not structure_check.allow_recommend:
+                    decision = type(decision)(
+                        phase=decision.phase,
+                        allow=False,
+                        reasons=[*decision.reasons, f"structured_state:{structure_check.reason}"],
+                    )
+                final_allow = combine_recommendation_gates(
+                    structure_check,
+                    legacy_state_machine_allow=region_check.valid,
+                    phase_allows_recommendation=decision.allow,
+                )
+                if decision.allow != final_allow:
+                    decision = type(decision)(phase=decision.phase, allow=final_allow, reasons=decision.reasons)
                 my_area = analyze_my_area(zones)
                 visible_counts = (
                     visible_counts_from_zones(zones, include_hand=False) if use_table_context else {}
@@ -313,11 +332,18 @@ class RealtimeApp:
                     "hand": visible_hand,
                     "raw_hand": raw_hand_tiles,
                     "open_melds": open_melds,
+                    "confirmed_open_melds": structured_table_state.confirmed_open_melds,
+                    "suspected_open_melds": structured_table_state.suspected_open_melds,
+                    "inferred_tile_count": structured_table_state.inferred_tile_count,
+                    "structured_state_status": structure_check.state.value,
+                    "recommend_block_reason": None if decision.allow else structure_check.reason,
                     "auto_zones": self.auto_zones_var.get(),
                     "use_table_context": use_table_context,
                     "zones": zones.to_dict(),
                     "raw_zones": raw_zones.to_dict(),
                     "visible_counts": visible_counts,
+                    "observed_visible_counts": structured_table_state.observed_visible_counts,
+                    "logical_visible_counts": structured_table_state.logical_visible_counts,
                     "phase": decision.phase.value,
                     "phase_text": decision.phase_text,
                     "allow_recommend": decision.allow,
@@ -331,7 +357,8 @@ class RealtimeApp:
                         "expected_hand_counts": diagnostics.expected_hand_counts,
                         "open_melds": diagnostics.open_melds,
                     },
-                    "region_state": region_check.to_dict(),
+                    "region_state": structure_check.to_dict(),
+                    "legacy_region_state": region_check.to_dict(),
                     "advice": asdict(advice) if advice else None,
                     "shape": shape,
                     "message": advice.explanation
@@ -435,6 +462,13 @@ class RealtimeApp:
         visible_counts = payload.get("visible_counts") or {}
         advice = payload.get("advice")
         diagnostics = payload.get("diagnostics") or {}
+        self.structured_var.set(
+            f"{payload.get('structured_state_status', '-')} | "
+            f"confirmed {payload.get('confirmed_open_melds', 0)} | "
+            f"suspected {payload.get('suspected_open_melds', 0)} | "
+            f"inferred {payload.get('inferred_tile_count', 0)} | "
+            f"block {payload.get('recommend_block_reason') or '-'}"
+        )
         self.phase_var.set(str(payload.get("phase_text") or payload.get("phase") or "-"))
         if payload.get("allow_recommend"):
             self.recommend_gate_var.set("允许推荐")
@@ -978,6 +1012,23 @@ def _recover_auto_hand_with_lower_confidence(
     if not _should_use_recovered_hand(zones.hand, low_zones.hand):
         return zones
     return _replace_zone_hand(zones, low_zones.hand)
+
+
+def _low_confidence_hand_candidates(
+    detector: YoloDetector,
+    table_image,
+    conf: float,
+    iou: float,
+    enabled: bool,
+):
+    if not enabled:
+        return []
+    recovery_conf = max(0.55, conf - 0.18)
+    if recovery_conf >= conf:
+        return []
+    detections = _tile_detections(detector.detect_image(table_image, conf=recovery_conf, iou=iou), iou)
+    zones = classify_table_zones(detections, table_image.shape[1], table_image.shape[0])
+    return [tile for tile in zones.zone_tiles if tile.zone == "hand" and tile.confidence < conf]
 
 
 def _should_use_recovered_hand(current_hand: list[str], recovered_hand: list[str]) -> bool:
