@@ -4,7 +4,7 @@ from collections import Counter
 from dataclasses import dataclass, replace
 
 from xueliu_ai.table.hand_slot_tracker import HandSlotTracker
-from xueliu_ai.table.meld_grouper import group_melds
+from xueliu_ai.table.meld_grouper import MeldGroupingResult, group_melds
 from xueliu_ai.table.structured_types import MeldGroup, MeldKind, StructuredTableState, ZoneTile
 from xueliu_ai.table.tile_tracker import TileTracker
 from xueliu_ai.vision.detection_types import Detection
@@ -12,15 +12,18 @@ from xueliu_ai.vision.detection_types import Detection
 
 @dataclass
 class MeldHistoryState:
+    group_id: str
     stable_frames: int
     missed_frames: int
     last_center: tuple[float, float]
+    tile_size: float
+    zone: str
     label: str
     kind: MeldKind | None
 
 
 class TableStateFusion:
-    """Build one coherent table state from tracked detections and regrouped melds."""
+    """Build one coherent table state from tracked detections and final zones."""
 
     tracked_zones = (
         "hand",
@@ -41,11 +44,13 @@ class TableStateFusion:
         self.tracker = TileTracker(max_missed=max_missed)
         self.hand_slots = HandSlotTracker(max_missed=max_missed)
         self.meld_confirmation_frames = meld_confirmation_frames
-        self._meld_history: dict[tuple, MeldHistoryState] = {}
+        self._meld_history: dict[str, MeldHistoryState] = {}
+        self._next_meld_id = 1
         self._meld_history_gap = False
         self.last_state: StructuredTableState | None = None
 
-    def update(self, zones, low_confidence_hand_tiles=None):
+    def update(self, zones, low_confidence_hand_tiles=None, *, finalize: bool = True):
+        """Fuse tile tracks; optionally finalize this frame and advance meld history."""
         tracked_input = [
             tile for tile in zones.zone_tiles if tile.zone in self.tracked_zones and not tile.inferred
         ]
@@ -57,27 +62,15 @@ class TableStateFusion:
         observed_hand = [tile for tile in by_zone["hand"] if not tile.inferred]
         by_zone["hand"] = self.hand_slots.update(observed_hand, low_confidence_hand_tiles)
 
-        meld_groups: list[MeldGroup] = []
-        self._active_meld_keys: set[tuple] = set()
-        for zone, axis in self.meld_axes.items():
-            observed = [tile for tile in by_zone[zone] if not tile.inferred]
-            grouped = group_melds([_to_detection(tile) for tile in observed], zone, axis, source="fusion")
-            meld_groups.extend(self._restore_and_confirm_groups(grouped.groups, observed))
-        self._meld_history_gap = False
-        for key in list(self._meld_history):
-            if key in self._active_meld_keys:
-                continue
-            history = self._meld_history[key]
-            history.missed_frames += 1
-            if history.missed_frames > 2:
-                del self._meld_history[key]
-            else:
-                self._meld_history_gap = True
-
-        logical_meld_tiles = [tile for group in meld_groups for tile in group.logical_tiles]
+        preliminary_groups, isolated_tiles = self._group_zone_tiles(by_zone, source="fusion")
+        logical_meld_tiles = [tile for group in preliminary_groups for tile in group.logical_tiles]
         untouched = [tile for tile in zones.zone_tiles if tile.zone not in self.tracked_zones]
+        untouched_unknown = [tile for tile in untouched if tile.zone == "unknown_tiles"]
+        other_untouched = [tile for tile in untouched if tile.zone != "unknown_tiles"]
         zone_tiles = [
-            *untouched,
+            *other_untouched,
+            *untouched_unknown,
+            *isolated_tiles,
             *by_zone["hand"],
             *logical_meld_tiles,
             *by_zone["center_discards"],
@@ -85,32 +78,46 @@ class TableStateFusion:
         fused_zones = replace(
             zones,
             hand=_labels(by_zone["hand"], horizontal=True),
-            bottom_melds=_group_labels(meld_groups, "bottom_melds"),
-            left_melds=_group_labels(meld_groups, "left_melds"),
-            top_melds=_group_labels(meld_groups, "top_melds"),
-            right_melds=_group_labels(meld_groups, "right_melds"),
+            bottom_melds=_group_labels(preliminary_groups, "bottom_melds"),
+            left_melds=_group_labels(preliminary_groups, "left_melds"),
+            top_melds=_group_labels(preliminary_groups, "top_melds"),
+            right_melds=_group_labels(preliminary_groups, "right_melds"),
             center_discards=_labels(by_zone["center_discards"], horizontal=False),
+            unknown_tiles=[tile.label for tile in zone_tiles if tile.zone == "unknown_tiles"],
             zone_tiles=zone_tiles,
-            meld_groups=meld_groups,
+            meld_groups=preliminary_groups,
         )
-        state = self.build_structured_state(fused_zones)
-        self.last_state = state
-        return state.zones
+        if not finalize:
+            return fused_zones
+        return self.build_structured_state(fused_zones).zones
 
     def build_structured_state(self, final_zones) -> StructuredTableState:
-        """Rebuild every derived field from the final, post-processed zones."""
-        meld_groups = self._regroup_final_zones(final_zones)
+        """Rebuild all derived fields and advance meld history once for a final frame."""
+        raw_groups, isolated_tiles = self._regroup_final_zones(final_zones)
+        meld_groups = self._update_meld_history(raw_groups)
         meld_zone_names = set(self.meld_axes)
-        non_meld_tiles = [tile for tile in final_zones.zone_tiles if tile.zone not in meld_zone_names]
+        non_meld_tiles = [
+            tile for tile in final_zones.zone_tiles if tile.zone not in meld_zone_names
+        ]
         logical_meld_tiles = [tile for group in meld_groups for tile in group.logical_tiles]
+        existing_unknown = [tile for tile in non_meld_tiles if tile.zone == "unknown_tiles"]
+        unknown_labels = [tile.label for tile in [*existing_unknown, *isolated_tiles]]
+        represented_unknown = Counter(unknown_labels)
+        for label in final_zones.unknown_tiles:
+            if represented_unknown[label] > 0:
+                represented_unknown[label] -= 1
+            else:
+                unknown_labels.append(label)
+        rebuilt_zone_tiles = [*non_meld_tiles, *isolated_tiles, *logical_meld_tiles]
         rebuilt_zones = replace(
             final_zones,
             bottom_melds=_group_labels(meld_groups, "bottom_melds"),
             left_melds=_group_labels(meld_groups, "left_melds"),
             top_melds=_group_labels(meld_groups, "top_melds"),
             right_melds=_group_labels(meld_groups, "right_melds"),
+            unknown_tiles=unknown_labels,
             meld_groups=meld_groups,
-            zone_tiles=[*non_meld_tiles, *logical_meld_tiles],
+            zone_tiles=rebuilt_zone_tiles,
         )
         state = StructuredTableState(
             zones=rebuilt_zones,
@@ -128,88 +135,194 @@ class TableStateFusion:
         self.last_state = state
         return state
 
-    def _regroup_final_zones(self, zones) -> list[MeldGroup]:
-        rebuilt: list[MeldGroup] = []
-        source_groups = {_meld_key(group): group for group in zones.meld_groups}
-        for zone, axis in self.meld_axes.items():
-            observed = [
-                tile for tile in zones.zone_tiles if tile.zone == zone and not tile.inferred
-            ]
-            grouped = group_melds([_to_detection(tile) for tile in observed], zone, axis, source="final")
-            for group in grouped.groups:
-                group = replace(group, observed_tiles=_restore_observed_tiles(group, observed))
-                key = _meld_key(group)
-                prior = source_groups.get(key)
-                history = self._meld_history.get(key)
-                kind = prior.kind if prior is not None else group.kind
-                if history and history.kind in {MeldKind.PONG, MeldKind.KONG}:
-                    kind = history.kind
-                rebuilt.append(replace(group, kind=kind))
-        return rebuilt
-
-    def _restore_and_confirm_groups(
+    def _group_zone_tiles(
         self,
-        groups: list[MeldGroup],
-        source_tiles: list[ZoneTile],
-    ) -> list[MeldGroup]:
+        by_zone: dict[str, list[ZoneTile]],
+        *,
+        source: str,
+    ) -> tuple[list[MeldGroup], list[ZoneTile]]:
+        groups: list[MeldGroup] = []
+        isolated: list[ZoneTile] = []
+        for zone, axis in self.meld_axes.items():
+            observed = [tile for tile in by_zone[zone] if not tile.inferred]
+            grouped = group_melds([_to_detection(tile) for tile in observed], zone, axis, source)
+            restored_groups, restored_isolated = _restore_grouping(grouped, observed)
+            groups.extend(restored_groups)
+            isolated.extend(restored_isolated)
+        return groups, isolated
+
+    def _regroup_final_zones(self, zones) -> tuple[list[MeldGroup], list[ZoneTile]]:
+        by_zone = {
+            zone: [
+                tile
+                for tile in zones.zone_tiles
+                if tile.zone == zone and not tile.inferred
+            ]
+            for zone in self.meld_axes
+        }
+        return self._group_zone_tiles(by_zone, source="final")
+
+    def _update_meld_history(self, groups: list[MeldGroup]) -> list[MeldGroup]:
+        unmatched_history = set(self._meld_history)
+        active_history: set[str] = set()
         result: list[MeldGroup] = []
-        for group in groups:
-            observed = _restore_observed_tiles(group, source_tiles)
-            group = replace(group, observed_tiles=observed)
-            key = _meld_key(group)
-            self._active_meld_keys.add(key)
-            previous = self._meld_history.get(key)
+        for group in sorted(groups, key=_group_sort_key):
+            history_id = self._match_history(group, unmatched_history)
+            if history_id is None:
+                history_id = f"meld_{self._next_meld_id}"
+                self._next_meld_id += 1
+                previous = None
+            else:
+                unmatched_history.remove(history_id)
+                previous = self._meld_history[history_id]
+
             frames = (previous.stable_frames if previous else 0) + 1
             previous_kind = previous.kind if previous else None
             kind = group.kind
             if group.is_suspected:
-                if previous_kind in {MeldKind.PONG, MeldKind.KONG}:
+                if group.conflicting_tiles:
+                    kind = group.kind
+                elif previous_kind in {MeldKind.PONG, MeldKind.KONG}:
                     kind = previous_kind
                 elif frames >= self.meld_confirmation_frames:
-                    kind = MeldKind.PONG if group.kind == MeldKind.SUSPECTED_PONG else MeldKind.KONG
+                    kind = (
+                        MeldKind.PONG
+                        if group.kind == MeldKind.SUSPECTED_PONG
+                        else MeldKind.KONG
+                    )
             confirmed_kind = kind if kind in {MeldKind.PONG, MeldKind.KONG} else previous_kind
-            center = _meld_center(group)
-            self._meld_history[key] = MeldHistoryState(
+            assigned = _assign_group_id(replace(group, kind=kind), history_id)
+            center = _meld_center(assigned)
+            self._meld_history[history_id] = MeldHistoryState(
+                group_id=history_id,
                 stable_frames=frames,
                 missed_frames=0,
                 last_center=center,
-                label=group.label,
+                tile_size=_meld_size(assigned),
+                zone=assigned.zone,
+                label=assigned.label,
                 kind=confirmed_kind,
             )
-            result.append(replace(group, kind=kind))
+            active_history.add(history_id)
+            result.append(assigned)
+
+        self._meld_history_gap = False
+        for history_id in list(self._meld_history):
+            if history_id in active_history:
+                continue
+            history = self._meld_history[history_id]
+            history.missed_frames += 1
+            if history.missed_frames > 2:
+                del self._meld_history[history_id]
+            else:
+                self._meld_history_gap = True
         return result
+
+    def _match_history(self, group: MeldGroup, candidates: set[str]) -> str | None:
+        center = _meld_center(group)
+        size = _meld_size(group)
+        best: tuple[float, str] | None = None
+        for history_id in candidates:
+            history = self._meld_history[history_id]
+            if history.zone != group.zone:
+                continue
+            distance = (
+                (center[0] - history.last_center[0]) ** 2
+                + (center[1] - history.last_center[1]) ** 2
+            ) ** 0.5
+            scale = max(20.0, size, history.tile_size)
+            if distance > scale * 1.75:
+                continue
+            label_penalty = 0.75 if history.label != group.label else 0.0
+            score = distance / scale + label_penalty
+            if best is None or score < best[0]:
+                best = (score, history_id)
+        return best[1] if best else None
 
 
 def _to_detection(tile: ZoneTile) -> Detection:
     return Detection(tile.label, tile.confidence, tile.x1, tile.y1, tile.x2, tile.y2)
 
 
-def _restore_observed_tiles(group: MeldGroup, source_tiles: list[ZoneTile]) -> list[ZoneTile]:
+def _restore_grouping(
+    grouped: MeldGroupingResult,
+    source_tiles: list[ZoneTile],
+) -> tuple[list[MeldGroup], list[ZoneTile]]:
     remaining = list(source_tiles)
-    restored: list[ZoneTile] = []
-    for grouped_tile in group.observed_tiles:
-        matches = [
-            tile for tile in remaining
-            if tile.label == grouped_tile.label
-        ]
-        if not matches:
-            restored.append(grouped_tile)
-            continue
-        source = min(
-            matches,
-            key=lambda tile: abs(tile.center_x - grouped_tile.center_x) + abs(tile.center_y - grouped_tile.center_y),
+    restored_groups: list[MeldGroup] = []
+    for group in grouped.groups:
+        observed: list[ZoneTile] = []
+        for grouped_tile in group.observed_tiles:
+            source = _take_nearest(remaining, grouped_tile)
+            if source is None:
+                observed.append(grouped_tile)
+                continue
+            observed.append(
+                replace(
+                    source,
+                    zone=group.zone,
+                    group_id=group.group_id,
+                    reason="fused_meld_group",
+                )
+            )
+        conflict_labels = Counter(tile.label for tile in group.conflicting_tiles)
+        conflicts: list[ZoneTile] = []
+        for tile in observed:
+            if conflict_labels[tile.label] > 0:
+                conflicts.append(tile)
+                conflict_labels[tile.label] -= 1
+        restored_groups.append(
+            replace(group, observed_tiles=observed, conflicting_tiles=conflicts)
         )
-        remaining.remove(source)
-        restored.append(replace(source, zone=group.zone, group_id=group.group_id, reason="fused_meld_group"))
-    return restored
+
+    restored_isolated: list[ZoneTile] = []
+    for isolated in grouped.isolated_tiles:
+        source = _take_nearest(remaining, isolated)
+        if source is None:
+            restored_isolated.append(isolated)
+            continue
+        restored_isolated.append(
+            replace(
+                source,
+                zone="unknown_tiles",
+                group_id=None,
+                reason=isolated.reason,
+            )
+        )
+    return restored_groups, restored_isolated
 
 
-def _meld_key(group: MeldGroup) -> tuple:
-    tiles = group.observed_tiles or group.logical_tiles
-    center_x = sum(tile.center_x for tile in tiles) / max(1, len(tiles))
-    center_y = sum(tile.center_y for tile in tiles) / max(1, len(tiles))
-    size = max(20.0, sum(max(tile.width, tile.height) for tile in tiles) / max(1, len(tiles)))
-    return group.zone, group.label, round(center_x / size), round(center_y / size)
+def _take_nearest(remaining: list[ZoneTile], target: ZoneTile) -> ZoneTile | None:
+    if not remaining:
+        return None
+    source = min(
+        remaining,
+        key=lambda tile: (
+            abs(tile.center_x - target.center_x)
+            + abs(tile.center_y - target.center_y)
+            + (1000 if tile.label != target.label else 0)
+        ),
+    )
+    remaining.remove(source)
+    return source
+
+
+def _assign_group_id(group: MeldGroup, group_id: str) -> MeldGroup:
+    observed = [replace(tile, group_id=group_id) for tile in group.observed_tiles]
+    inferred = [replace(tile, group_id=group_id) for tile in group.inferred_tiles]
+    conflict_labels = Counter(tile.label for tile in group.conflicting_tiles)
+    conflicts: list[ZoneTile] = []
+    for tile in observed:
+        if conflict_labels[tile.label] > 0:
+            conflicts.append(tile)
+            conflict_labels[tile.label] -= 1
+    return replace(
+        group,
+        group_id=group_id,
+        observed_tiles=observed,
+        inferred_tiles=inferred,
+        conflicting_tiles=conflicts,
+    )
 
 
 def _meld_center(group: MeldGroup) -> tuple[float, float]:
@@ -220,12 +333,31 @@ def _meld_center(group: MeldGroup) -> tuple[float, float]:
     )
 
 
+def _meld_size(group: MeldGroup) -> float:
+    tiles = group.observed_tiles or group.logical_tiles
+    return sum(max(tile.width, tile.height) for tile in tiles) / max(1, len(tiles))
+
+
+def _group_sort_key(group: MeldGroup) -> tuple:
+    center = _meld_center(group)
+    return group.zone, center[1], center[0], group.label
+
+
 def _group_labels(groups: list[MeldGroup], zone: str) -> list[str]:
-    return [tile.label for group in groups if group.zone == zone for tile in group.logical_tiles]
+    return [
+        group.label
+        for group in groups
+        if group.zone == zone
+        for _ in range(group.logical_count)
+    ]
 
 
 def _labels(tiles, horizontal: bool) -> list[str]:
-    key = (lambda tile: (tile.center_x, tile.center_y)) if horizontal else (lambda tile: (tile.center_y, tile.center_x))
+    key = (
+        (lambda tile: (tile.center_x, tile.center_y))
+        if horizontal
+        else (lambda tile: (tile.center_y, tile.center_x))
+    )
     return [tile.label for tile in sorted(tiles, key=key)]
 
 

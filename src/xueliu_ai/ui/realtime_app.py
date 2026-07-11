@@ -269,7 +269,7 @@ class RealtimeApp:
                     hand_tiles = [det.label for det in sorted(hand_detections, key=lambda item: item.center_x)]
                     zones = _replace_zone_hand(zones, hand_tiles)
 
-                zones = structural_fusion.update(zones, low_hand_candidates)
+                zones = structural_fusion.update(zones, low_hand_candidates, finalize=False)
                 zones = event_classifier.update(zones, table_image.shape[1], table_image.shape[0])
 
                 raw_hand_tiles = hand_tiles

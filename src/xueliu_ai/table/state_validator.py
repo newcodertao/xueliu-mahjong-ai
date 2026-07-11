@@ -88,33 +88,43 @@ class StructuredStateMachine:
             self._last_signature = None
             self._stable_frames = 0
             return safety
-        signature = (
-            tuple(
-                (tile.label, tile.inferred, tile.track_id, _position_bucket(tile.center_x), _position_bucket(tile.center_y))
-                for tile in zones.zone_tiles
-                if tile.zone == "hand"
-            ),
-            tuple(
-                (
-                    group.group_id,
-                    group.zone,
-                    group.kind.value,
-                    group.label,
-                    tuple(
+        hand_signature = sorted(
+            (
+                tile.label,
+                tile.inferred,
+                tile.track_id if tile.track_id is not None else -1,
+                _position_bucket(tile.center_x),
+                _position_bucket(tile.center_y),
+            )
+            for tile in zones.zone_tiles
+            if tile.zone == "hand"
+        )
+        meld_signature = sorted(
+            (
+                group.group_id,
+                group.zone,
+                group.kind.value,
+                group.label,
+                tuple(
+                    sorted(
                         (
-                            tile.track_id,
+                            tile.track_id if tile.track_id is not None else -1,
                             tile.inferred,
                             _position_bucket(tile.center_x),
                             _position_bucket(tile.center_y),
                         )
                         for tile in group.logical_tiles
-                    ),
-                )
-                for group in zones.meld_groups
-            ),
-            tuple((tile.label, tile.track_id) for tile in zones.zone_tiles if tile.zone == "unknown_tiles"),
-            tuple((tile.label, tile.track_id) for tile in zones.zone_tiles if tile.zone == "event_tiles"),
-            tuple((tile.label, tile.track_id) for tile in zones.zone_tiles if tile.zone == "hu_display_tiles"),
+                    )
+                ),
+            )
+            for group in zones.meld_groups
+        )
+        signature = (
+            tuple(hand_signature),
+            tuple(meld_signature),
+            _zone_signature(zones, "unknown_tiles"),
+            _zone_signature(zones, "event_tiles"),
+            _zone_signature(zones, "hu_display_tiles"),
             tuple(sorted(getattr(state_or_zones, "observed_visible_counts", {}).items())),
             tuple(sorted(getattr(state_or_zones, "logical_visible_counts", {}).items())),
             diagnostics_valid,
@@ -136,6 +146,21 @@ class StructuredStateMachine:
 def _position_bucket(value: float, size: float = 5.0) -> int:
     """Keep structural stability sensitive to movement without reacting to detector jitter."""
     return round(value / size)
+
+
+def _zone_signature(zones, zone: str) -> tuple:
+    return tuple(
+        sorted(
+            (
+                tile.label,
+                tile.track_id if tile.track_id is not None else -1,
+                _position_bucket(tile.center_x),
+                _position_bucket(tile.center_y),
+            )
+            for tile in zones.zone_tiles
+            if tile.zone == zone
+        )
+    )
 
 
 def combine_recommendation_gates(

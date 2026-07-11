@@ -130,6 +130,9 @@ class MeldGroup:
     confidence: float = 0.0
     axis: str = "horizontal"
     reason: str = ""
+    label_votes: dict[str, float] = field(default_factory=dict)
+    conflicting_tiles: list[ZoneTile] = field(default_factory=list)
+    label_consistency: float = 1.0
 
     @property
     def all_tiles(self) -> list[ZoneTile]:
@@ -172,8 +175,11 @@ class MeldGroup:
             "confidence": self.confidence,
             "axis": self.axis,
             "reason": self.reason,
+            "label_votes": self.label_votes,
+            "label_consistency": self.label_consistency,
             "observed_tiles": [tile.to_dict() for tile in self.observed_tiles],
             "inferred_tiles": [tile.to_dict() for tile in self.inferred_tiles],
+            "conflicting_tiles": [tile.to_dict() for tile in self.conflicting_tiles],
             "open_meld_count": self.open_meld_count,
         }
 

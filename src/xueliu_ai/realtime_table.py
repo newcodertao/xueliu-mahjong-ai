@@ -623,13 +623,26 @@ def logical_visible_counts_from_zones(zones: TableZones, include_hand: bool = Fa
 
 def diagnose_zones(zones: TableZones) -> ZoneDiagnostics:
     confirmed_open_melds = _open_melds_from_groups(zones.meld_groups, "bottom_melds")
+    suspected_open_melds = sum(
+        1
+        for group in zones.meld_groups
+        if group.zone == "bottom_melds" and group.is_suspected
+    )
     expected_counts = sorted({13 - confirmed_open_melds * 3, 14 - confirmed_open_melds * 3})
+    candidate_melds = confirmed_open_melds + suspected_open_melds
+    candidate_expected_counts = sorted({13 - candidate_melds * 3, 14 - candidate_melds * 3})
     warnings: list[str] = []
     logical_warnings: list[str] = []
 
     if len(zones.hand) not in expected_counts:
-        expected_text = "/".join(str(value) for value in expected_counts)
-        warnings.append(f"hand count invalid: expected {expected_text}, got {len(zones.hand)}")
+        if suspected_open_melds and len(zones.hand) in candidate_expected_counts:
+            logical_warnings.append(
+                "hand count depends on unconfirmed meld: "
+                f"candidate open melds {candidate_melds}, got {len(zones.hand)}"
+            )
+        else:
+            expected_text = "/".join(str(value) for value in expected_counts)
+            warnings.append(f"hand count invalid: expected {expected_text}, got {len(zones.hand)}")
 
     observed_counts = visible_counts_from_zones(zones, include_hand=True)
     logical_counts = logical_visible_counts_from_zones(zones, include_hand=True)

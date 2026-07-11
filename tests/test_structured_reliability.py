@@ -221,3 +221,86 @@ def test_confirmed_meld_history_survives_one_missing_frame() -> None:
     assert fusion.last_state.meld_history_transient
     fusion.update(_zones(pong))
     assert fusion.last_state.meld_groups[0].kind == MeldKind.PONG
+
+
+def test_final_rebuild_preserves_isolated_meld_tile_as_unknown() -> None:
+    fusion = TableStateFusion()
+    fusion.update(_zones([_tile("7W", 40, "left_melds")]))
+    state = fusion.last_state
+    assert state is not None
+    assert state.zones.unknown_tiles == ["7W"]
+    assert [tile.label for tile in state.zones.zone_tiles if tile.zone == "unknown_tiles"] == [
+        "7W"
+    ]
+    validation = validate_structured_state(state, True, 5, diagnostics_valid=True)
+    assert validation.state == RegionState.UNCERTAIN
+    assert not validation.allow_recommend
+
+
+def test_mismatched_tile_in_spatial_meld_is_not_dropped() -> None:
+    fusion = TableStateFusion()
+    tiles = [
+        _tile("7W", 0, "bottom_melds"),
+        _tile("7W", 40, "bottom_melds"),
+        replace(_tile("8W", 80, "bottom_melds"), confidence=0.45),
+    ]
+    for _ in range(3):
+        fusion.update(_zones(tiles))
+    state = fusion.last_state
+    assert state is not None
+    assert len(state.meld_groups) == 1
+    group = state.meld_groups[0]
+    assert group.kind == MeldKind.SUSPECTED_PONG
+    assert group.label == "7W"
+    assert sorted(tile.label for tile in group.observed_tiles) == ["7W", "7W", "8W"]
+    assert [tile.label for tile in group.conflicting_tiles] == ["8W"]
+    assert len(group.observed_tiles) + len(state.zones.unknown_tiles) == 3
+
+
+def test_post_processed_meld_promotes_after_stable_frames() -> None:
+    fusion = TableStateFusion(meld_confirmation_frames=3)
+    group_ids = []
+    for _ in range(3):
+        pair = [_tile("6T", 200, "bottom_melds"), _tile("6T", 240, "bottom_melds")]
+        state = fusion.build_structured_state(_zones(pair))
+        group_ids.append(state.meld_groups[0].group_id)
+    assert len(set(group_ids)) == 1
+    assert state.meld_groups[0].kind == MeldKind.PONG
+
+
+def test_suspected_meld_explains_hand_count_without_hard_invalid() -> None:
+    fusion = TableStateFusion(meld_confirmation_frames=3)
+    hand = [_tile(f"{index % 9 + 1}T", 400 + index * 40) for index in range(10)]
+    pair = [_tile("7W", 0, "bottom_melds"), _tile("7W", 40, "bottom_melds")]
+    fusion.update(_zones([*hand, *pair], hand=[tile.label for tile in hand]))
+    state = fusion.last_state
+    diagnostics = diagnose_zones(state.zones)
+    assert diagnostics.valid
+    assert any("unconfirmed meld" in warning for warning in diagnostics.logical_warnings)
+    validation = validate_structured_state(state, True, 5, diagnostics_valid=diagnostics.valid)
+    assert validation.state == RegionState.UNCERTAIN
+    assert validation.reason == "unconfirmed_meld_present"
+
+
+def test_meld_group_id_survives_center_bucket_boundary() -> None:
+    fusion = TableStateFusion(meld_confirmation_frames=3)
+    ids = []
+    for offset in (0, 12, 4):
+        pair = [
+            _tile("3W", 19 + offset, "bottom_melds"),
+            _tile("3W", 59 + offset, "bottom_melds"),
+        ]
+        fusion.update(_zones(pair))
+        ids.append(fusion.last_state.meld_groups[0].group_id)
+    assert len(set(ids)) == 1
+    assert fusion.last_state.meld_groups[0].kind == MeldKind.PONG
+
+
+def test_structured_stability_ignores_input_list_order() -> None:
+    machine = StructuredStateMachine(minimum_stable_frames=2)
+    labels = ("1W", "1W", "2W", "2W", "3W", "3W", "4W", "4W", "5W", "5W", "6W", "6W", "7W", "8W")
+    tiles = [replace(_tile(label, index * 40), track_id=index + 1) for index, label in enumerate(labels)]
+    first = _zones(tiles, hand=list(labels))
+    second = _zones(list(reversed(tiles)), hand=list(labels))
+    assert not machine.update(first, True, True).allow_recommend
+    assert machine.update(second, True, True).allow_recommend

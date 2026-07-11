@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from statistics import median
 
 from xueliu_ai.table.structured_types import MeldGroup, MeldKind, ZoneTile
@@ -32,7 +32,7 @@ def group_melds(
     groups: list[MeldGroup] = []
     isolated: list[ZoneTile] = []
     for run_index, run in enumerate(runs, start=1):
-        for segment_index, segment in enumerate(_label_segments(run, axis), start=1):
+        for segment_index, segment in enumerate(_candidate_segments(run, axis), start=1):
             group_id = f"{zone}_{run_index}_{segment_index}"
             group = _make_group(segment, zone, axis, source, group_id)
             if group is not None:
@@ -55,29 +55,43 @@ def _make_group(
 ) -> MeldGroup | None:
     if not detections:
         return None
-    labels = Counter(det.label for det in detections)
-    label, count = labels.most_common(1)[0]
-    same = [det for det in detections if det.label == label]
-    if count not in (2, 3, 4) or count != len(detections):
+    observed_count = len(detections)
+    if observed_count not in (2, 3, 4):
         return None
-
-    ordered = sorted(same, key=_axis_center(axis))
+    ordered = sorted(detections, key=_axis_center(axis))
     if not _compact_enough(ordered, axis):
         return None
 
-    suspected_kong = count == 3 and _looks_like_stacked_kong(ordered, axis)
+    votes: Counter[str] = Counter()
+    for detection in ordered:
+        votes[detection.label] += max(0.01, detection.confidence)
+    label, winning_vote = votes.most_common(1)[0]
+    same_count = sum(1 for detection in ordered if detection.label == label)
+    if same_count < 2 or (observed_count == 4 and same_count < 3):
+        return None
+    total_vote = sum(votes.values())
+    consistency = winning_vote / total_vote if total_vote else 0.0
+    has_conflict = same_count != observed_count
+
+    suspected_kong = observed_count == 3 and _looks_like_stacked_kong(ordered, axis)
     kind = (
         MeldKind.SUSPECTED_KONG
         if suspected_kong
-        else {2: MeldKind.SUSPECTED_PONG, 3: MeldKind.PONG, 4: MeldKind.KONG}[count]
+        else MeldKind.SUSPECTED_PONG
+        if has_conflict and observed_count == 3
+        else MeldKind.SUSPECTED_KONG
+        if has_conflict and observed_count == 4
+        else {2: MeldKind.SUSPECTED_PONG, 3: MeldKind.PONG, 4: MeldKind.KONG}[
+            observed_count
+        ]
     )
     tiles = [
         ZoneTile.from_detection(det, zone, group_id, source, "spatial_meld_group")
         for det in ordered
     ]
     inferred: list[ZoneTile] = []
-    if count == 2 or suspected_kong:
-        inferred.append(_infer_missing_tile(tiles, axis, group_id))
+    if observed_count == 2 or suspected_kong:
+        inferred.append(replace(_infer_missing_tile(tiles, axis, group_id), label=label))
 
     confidence = sum(tile.confidence for tile in tiles) / len(tiles)
     if inferred:
@@ -91,11 +105,16 @@ def _make_group(
         inferred_tiles=inferred,
         confidence=confidence,
         axis=axis,
+        label_votes=dict(votes),
+        conflicting_tiles=[tile for tile in tiles if tile.label != label],
+        label_consistency=consistency,
         reason=(
             "two_tile_spatial_completion"
-            if count == 2
+            if observed_count == 2
             else "stacked_kong_completion"
             if suspected_kong
+            else "spatial_group_label_conflict"
+            if has_conflict
             else "confirmed_spatial_group"
         ),
     )
@@ -166,8 +185,10 @@ def _spatial_runs(detections: list[Detection], axis: str) -> list[list[Detection
     return runs
 
 
-def _label_segments(run: list[Detection], axis: str) -> list[list[Detection]]:
+def _candidate_segments(run: list[Detection], axis: str) -> list[list[Detection]]:
     ordered = sorted(run, key=_axis_center(axis))
+    if len(ordered) <= 4:
+        return [ordered]
     segments: list[list[Detection]] = []
     current: list[Detection] = []
     for det in ordered:
