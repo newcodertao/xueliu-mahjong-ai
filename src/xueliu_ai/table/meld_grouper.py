@@ -40,7 +40,7 @@ def group_melds(
             else:
                 reason = "isolated_near_meld" if len(segment) <= 2 else "invalid_meld_geometry"
                 isolated.extend(
-                    ZoneTile.from_detection(det, "unknown_tiles", group_id, source, reason)
+                    ZoneTile.from_detection(det, "candidate_meld_tiles", group_id, source, reason)
                     for det in segment
                 )
     return MeldGroupingResult(groups, isolated)

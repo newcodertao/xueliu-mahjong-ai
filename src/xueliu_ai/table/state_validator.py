@@ -44,8 +44,8 @@ def validate_structured_state(
         return StructuredStateResult(RegionState.TRANSIENT, False, "event_animation_active")
     if not phase_stable:
         return StructuredStateResult(RegionState.TRANSIENT, False, "phase_not_stable")
-    if not diagnostics_valid:
-        return StructuredStateResult(RegionState.INVALID, False, "diagnostics_invalid")
+    if zones.candidate_meld_tiles:
+        return StructuredStateResult(RegionState.PARTIAL, False, "candidate_meld_unresolved")
     if zones.unknown_tiles:
         return StructuredStateResult(RegionState.UNCERTAIN, False, "unknown_tiles_present")
     if state is not None and any(group.is_suspected for group in state.meld_groups):
@@ -56,6 +56,8 @@ def validate_structured_state(
     )
     if any(count > 4 for count in observed_counts.values()):
         return StructuredStateResult(RegionState.INVALID, False, "observed_tile_count_over_four")
+    if not diagnostics_valid:
+        return StructuredStateResult(RegionState.PARTIAL, False, "incomplete_table_structure")
     if state is not None and any(count > 4 for count in state.logical_visible_counts.values()):
         return StructuredStateResult(RegionState.UNCERTAIN, False, "logical_tile_count_over_four")
     inferred_hand = any(tile.inferred for tile in zones.zone_tiles if tile.zone == "hand")
@@ -123,6 +125,7 @@ class StructuredStateMachine:
             tuple(hand_signature),
             tuple(meld_signature),
             _zone_signature(zones, "unknown_tiles"),
+            _zone_signature(zones, "candidate_meld_tiles"),
             _zone_signature(zones, "event_tiles"),
             _zone_signature(zones, "hu_display_tiles"),
             tuple(sorted(getattr(state_or_zones, "observed_visible_counts", {}).items())),

@@ -10,6 +10,7 @@ class GamePhase(str, Enum):
     UNKNOWN = "unknown"
     LOADING = "loading"
     DEALING = "dealing"
+    PLAYING_PARTIAL = "playing_partial"
     CHOOSE_MISSING_SUIT = "choose_missing_suit"
     WAITING = "waiting"
     MY_TURN = "my_turn"
@@ -20,6 +21,7 @@ PHASE_TEXT = {
     GamePhase.UNKNOWN: "未知",
     GamePhase.LOADING: "加载中",
     GamePhase.DEALING: "发牌/动画中",
+    GamePhase.PLAYING_PARTIAL: "牌局进行中（识别不完整）",
     GamePhase.CHOOSE_MISSING_SUIT: "等待定缺",
     GamePhase.WAITING: "等待摸牌",
     GamePhase.MY_TURN: "轮到我出牌",
@@ -66,9 +68,16 @@ def infer_game_phase(context: PhaseContext) -> GamePhase:
         return GamePhase.CHOOSE_MISSING_SUIT
 
     if not context.diagnostics.valid:
-        if hand_count in (0, 3, 6, 9, 12) or hand_count < min(context.diagnostics.expected_hand_counts, default=13):
+        board_activity = bool(
+            zones.center_discards
+            or zones.meld_groups
+            or zones.hu_display_tiles
+            or zones.candidate_meld_tiles
+        )
+        expected_minimum = min(context.diagnostics.expected_hand_counts, default=13)
+        if not board_activity and total_visible <= 14 and hand_count < expected_minimum:
             return GamePhase.DEALING
-        return GamePhase.UNKNOWN
+        return GamePhase.PLAYING_PARTIAL
 
     if _is_my_turn_count(hand_count, context.diagnostics.open_melds):
         return GamePhase.MY_TURN
@@ -107,4 +116,3 @@ def _is_waiting_count(hand_count: int, open_melds: int) -> bool:
 
 def _is_my_turn_count(hand_count: int, open_melds: int) -> bool:
     return hand_count == expected_hand_counts(open_melds)[1]
-

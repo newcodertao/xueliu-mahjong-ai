@@ -16,6 +16,7 @@ class MeldKind(str, Enum):
 class RegionState(str, Enum):
     CONFIRMED = "CONFIRMED"
     INFERRED_SAFE = "INFERRED_SAFE"
+    PARTIAL = "PARTIAL"
     UNCERTAIN = "UNCERTAIN"
     TRANSIENT = "TRANSIENT"
     INVALID = "INVALID"

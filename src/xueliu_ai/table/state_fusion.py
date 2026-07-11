@@ -84,6 +84,9 @@ class TableStateFusion:
             right_melds=_group_labels(preliminary_groups, "right_melds"),
             center_discards=_labels(by_zone["center_discards"], horizontal=False),
             unknown_tiles=[tile.label for tile in zone_tiles if tile.zone == "unknown_tiles"],
+            candidate_meld_tiles=[
+                tile.label for tile in zone_tiles if tile.zone == "candidate_meld_tiles"
+            ],
             zone_tiles=zone_tiles,
             meld_groups=preliminary_groups,
         )
@@ -101,7 +104,10 @@ class TableStateFusion:
         ]
         logical_meld_tiles = [tile for group in meld_groups for tile in group.logical_tiles]
         existing_unknown = [tile for tile in non_meld_tiles if tile.zone == "unknown_tiles"]
-        unknown_labels = [tile.label for tile in [*existing_unknown, *isolated_tiles]]
+        existing_candidates = [
+            tile for tile in non_meld_tiles if tile.zone == "candidate_meld_tiles"
+        ]
+        unknown_labels = [tile.label for tile in existing_unknown]
         represented_unknown = Counter(unknown_labels)
         for label in final_zones.unknown_tiles:
             if represented_unknown[label] > 0:
@@ -116,6 +122,9 @@ class TableStateFusion:
             top_melds=_group_labels(meld_groups, "top_melds"),
             right_melds=_group_labels(meld_groups, "right_melds"),
             unknown_tiles=unknown_labels,
+            candidate_meld_tiles=[
+                tile.label for tile in [*existing_candidates, *isolated_tiles]
+            ],
             meld_groups=meld_groups,
             zone_tiles=rebuilt_zone_tiles,
         )
@@ -284,7 +293,7 @@ def _restore_grouping(
         restored_isolated.append(
             replace(
                 source,
-                zone="unknown_tiles",
+                zone="candidate_meld_tiles",
                 group_id=None,
                 reason=isolated.reason,
             )

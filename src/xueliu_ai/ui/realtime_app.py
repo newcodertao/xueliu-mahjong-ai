@@ -301,7 +301,8 @@ class RealtimeApp:
                     )
                 structure_check = structured_state.update(
                     structured_table_state,
-                    phase_stable=decision.phase in {GamePhase.WAITING, GamePhase.MY_TURN},
+                    phase_stable=decision.phase
+                    in {GamePhase.WAITING, GamePhase.MY_TURN, GamePhase.PLAYING_PARTIAL},
                     diagnostics_valid=diagnostics.valid,
                 )
                 if not structure_check.allow_recommend:
@@ -488,9 +489,10 @@ class RealtimeApp:
         self.hand_var.set(_tiles_text(hand) if hand else "-")
         self.shape_var.set(str(payload.get("shape") or "-"))
         self.zone_var.set(
-            f"手牌 {len(zones.get('hand', []))} / 中间 {len(zones.get('center_discards', []))} / "
+            f"手牌 {len(zones.get('hand', []))} / 弃牌 {len(zones.get('center_discards', []))} / "
             f"左 {len(zones.get('left_melds', []))} / 右 {len(zones.get('right_melds', []))} / "
             f"上 {len(zones.get('top_melds', []))} / "
+            f"候选副露 {len(zones.get('candidate_meld_tiles', []))} / "
             f"未知 {len(zones.get('unknown_tiles', [])) + len(zones.get('hu_display_tiles', []))} / "
             f"弃牌 我{len(zones.get('my_discards', []))} "
             f"上{len(zones.get('left_discards', []))} "
@@ -499,11 +501,12 @@ class RealtimeApp:
         )
         unknown_like = (
             len(zones.get("unknown_tiles", []))
+            + len(zones.get("candidate_meld_tiles", []))
             + len(zones.get("hu_display_tiles", []))
             + len(zones.get("event_tiles", []))
         )
         self.zone_var.set(
-            f"hand {len(zones.get('hand', []))} / center {len(zones.get('center_discards', []))} / "
+            f"hand {len(zones.get('hand', []))} / discards {len(zones.get('center_discards', []))} / "
             f"L {len(zones.get('left_melds', []))} / R {len(zones.get('right_melds', []))} / "
             f"T {len(zones.get('top_melds', []))} / unknown {unknown_like} / "
             f"discard me {len(zones.get('my_discards', []))} "
@@ -611,7 +614,12 @@ class RegionStateMachine:
 
     def update(self, zones, diagnostics) -> RegionStateResult:
         current_open_melds = int(diagnostics.open_melds)
-        unknown_like = len(zones.unknown_tiles) + len(zones.hu_display_tiles) + len(getattr(zones, "event_tiles", []))
+        unknown_like = (
+            len(zones.unknown_tiles)
+            + len(zones.candidate_meld_tiles)
+            + len(zones.hu_display_tiles)
+            + len(getattr(zones, "event_tiles", []))
+        )
         previous = self.last_open_melds if self.last_open_melds is not None else current_open_melds
 
         if zones.event_tiles:
@@ -665,8 +673,10 @@ class RealtimeStateStabilizer:
                 top_discards=stable_zones.top_discards,
                 right_discards=stable_zones.right_discards,
                 unknown_tiles=stable_zones.unknown_tiles,
+                candidate_meld_tiles=stable_zones.candidate_meld_tiles,
                 hu_display_tiles=stable_zones.hu_display_tiles,
                 event_tiles=stable_zones.event_tiles,
+                table_decor_tiles=stable_zones.table_decor_tiles,
                 zone_tiles=zones.zone_tiles,
                 meld_groups=zones.meld_groups,
             )
@@ -781,6 +791,7 @@ class HardCaseRecorder:
                 all_tiles.extend(zones.get(name, []) or [])
             unknown_like = (
                 len(zones.get("unknown_tiles", []) or [])
+                + len(zones.get("candidate_meld_tiles", []) or [])
                 + len(zones.get("hu_display_tiles", []) or [])
                 + len(zones.get("event_tiles", []) or [])
             )
@@ -976,8 +987,10 @@ def _replace_zone_hand(zones, hand_tiles: list[str]):
         top_discards=zones.top_discards,
         right_discards=zones.right_discards,
         unknown_tiles=zones.unknown_tiles,
+        candidate_meld_tiles=zones.candidate_meld_tiles,
         hu_display_tiles=zones.hu_display_tiles,
         event_tiles=zones.event_tiles,
+        table_decor_tiles=zones.table_decor_tiles,
         zone_tiles=zones.zone_tiles,
         meld_groups=zones.meld_groups,
     )
@@ -997,8 +1010,10 @@ def _replace_zone_hand_and_melds(zones, hand_tiles: list[str], my_meld_tiles: li
         top_discards=zones.top_discards,
         right_discards=zones.right_discards,
         unknown_tiles=zones.unknown_tiles,
+        candidate_meld_tiles=zones.candidate_meld_tiles,
         hu_display_tiles=zones.hu_display_tiles,
         event_tiles=zones.event_tiles,
+        table_decor_tiles=zones.table_decor_tiles,
         zone_tiles=zones.zone_tiles,
         meld_groups=zones.meld_groups,
     )
@@ -1265,8 +1280,10 @@ def _stabilize_zones(history: list[dict[str, list[str]]], latest_zones):
         "top_discards",
         "right_discards",
         "unknown_tiles",
+        "candidate_meld_tiles",
         "hu_display_tiles",
         "event_tiles",
+        "table_decor_tiles",
     ]
     values = {}
     for name in zone_names:

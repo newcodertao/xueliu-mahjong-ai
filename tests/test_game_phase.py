@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 from xueliu_ai.realtime_table import TableZones, diagnose_zones
 from xueliu_ai.table.game_phase import GamePhase, PhaseContext, infer_game_phase, should_allow_recommend
 from xueliu_ai.table.my_area import analyze_my_area
@@ -43,6 +45,25 @@ def test_phase_allows_recommend_when_stable_my_turn() -> None:
     assert decision.allow
 
 
+def test_incomplete_active_table_is_playing_partial_not_dealing() -> None:
+    base = _zones(["1W"] * 10)
+    zones = replace(base, center_discards=["2T"], all_tiles=[*base.hand, "2T"])
+    diagnostics = diagnose_zones(zones)
+
+    assert not diagnostics.valid
+    assert (
+        infer_game_phase(PhaseContext(zones, diagnostics, True, "W", 11))
+        == GamePhase.PLAYING_PARTIAL
+    )
+
+
+def test_initial_short_hand_without_board_activity_is_dealing() -> None:
+    zones = _zones(["1W"] * 10)
+    diagnostics = diagnose_zones(zones)
+
+    assert infer_game_phase(PhaseContext(zones, diagnostics, True, "W", 10)) == GamePhase.DEALING
+
+
 def test_my_area_analysis_reports_meld_count_and_drawn_tile() -> None:
     zones = _zones(["1W", "2W", "3W", "4W", "5W", "6W", "7W", "8W"], ["9W", "9W", "9W", "1T", "1T", "1T"])
     analysis = analyze_my_area(zones)
@@ -51,4 +72,3 @@ def test_my_area_analysis_reports_meld_count_and_drawn_tile() -> None:
     assert analysis.expected_counts == (7, 8)
     assert analysis.drawn_tile == "8W"
     assert analysis.legal_count
-

@@ -1,6 +1,6 @@
 from xueliu_ai.realtime_table import TableZones, diagnose_zones
 from xueliu_ai.capture.roi_config import Roi
-from xueliu_ai.table.event_classifier import EventTileClassifier, classify_isolated_tile
+from xueliu_ai.table.event_classifier import EventTileClassifier
 from xueliu_ai.table.hand_slot_tracker import HandSlotTracker
 from xueliu_ai.table.meld_grouper import group_melds
 from xueliu_ai.table.state_fusion import TableStateFusion
@@ -47,12 +47,10 @@ def test_offset_three_tile_group_is_suspected_kong() -> None:
     assert len(result.groups[0].all_tiles) == 4
 
 
-def test_single_tile_near_meld_is_unknown_not_hu() -> None:
+def test_single_tile_near_meld_is_candidate_not_hu() -> None:
     result = group_melds([_det("7W", 0, 0)], "left_melds", "vertical")
     assert result.groups == []
-    assert result.isolated_tiles[0].zone == "unknown_tiles"
-    classification = classify_isolated_tile(result.isolated_tiles[0])
-    assert classification.zone == "unknown_tiles"
+    assert result.isolated_tiles[0].zone == "candidate_meld_tiles"
 
 
 def test_two_kongs_count_as_two_open_melds() -> None:
@@ -126,6 +124,17 @@ def test_isolated_tile_transitions_from_animation_to_stable_hu() -> None:
         states.append((result.event_tiles, result.hu_display_tiles))
     assert states[:2] == [(["7W"], []), (["7W"], [])]
     assert states[2] == ([], ["7W"])
+
+
+def test_candidate_meld_tile_never_transitions_to_hu() -> None:
+    classifier = EventTileClassifier(hu_stable_frames=3)
+    tile = ZoneTile("7W", 0.9, 20, 200, 56, 252, "candidate_meld_tiles")
+    zones = _zones(candidate_meld_tiles=["7W"], zone_tiles=[tile])
+    for _ in range(5):
+        result = classifier.update(zones, width=1000, height=800)
+        assert result.candidate_meld_tiles == ["7W"]
+        assert result.hu_display_tiles == []
+        assert result.event_tiles == []
 
 
 def test_structured_state_machine_requires_consecutive_stability() -> None:

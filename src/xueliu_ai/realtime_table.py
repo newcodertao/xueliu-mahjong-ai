@@ -36,8 +36,10 @@ class TableZones:
     top_discards: list[str] = field(default_factory=list)
     right_discards: list[str] = field(default_factory=list)
     unknown_tiles: list[str] = field(default_factory=list)
+    candidate_meld_tiles: list[str] = field(default_factory=list)
     hu_display_tiles: list[str] = field(default_factory=list)
     event_tiles: list[str] = field(default_factory=list)
+    table_decor_tiles: list[str] = field(default_factory=list)
     zone_tiles: list[ZoneTile] = field(default_factory=list)
     meld_groups: list[MeldGroup] = field(default_factory=list)
 
@@ -62,8 +64,10 @@ class TableZones:
             "top_discards": self.top_discards,
             "right_discards": self.right_discards,
             "unknown_tiles": self.unknown_tiles,
+            "candidate_meld_tiles": self.candidate_meld_tiles,
             "hu_display_tiles": self.hu_display_tiles,
             "event_tiles": self.event_tiles,
+            "table_decor_tiles": self.table_decor_tiles,
             "all_tiles": self.all_tiles,
             "zone_tiles": [tile.to_dict() for tile in self.zone_tiles],
             "meld_groups": [group.to_dict() for group in self.meld_groups],
@@ -299,6 +303,9 @@ def _classify_table_zones_auto(detections: list[Detection], width: int, height: 
     hu_display_zone = [tile for tile in isolated_tiles if tile.zone == "hu_display_tiles"]
     event_zone = [tile for tile in isolated_tiles if tile.zone == "event_tiles"]
     unknown_zone = [tile for tile in isolated_tiles if tile.zone == "unknown_tiles"]
+    candidate_meld_zone = [
+        tile for tile in isolated_tiles if tile.zone == "candidate_meld_tiles"
+    ]
 
     discard_groups = _split_discards_by_player(center_discards, width, height)
     zone_tiles = [
@@ -313,6 +320,7 @@ def _classify_table_zones_auto(detections: list[Detection], width: int, height: 
         *_zone_tiles_for_detections(discard_groups["top"], "top_discards"),
         *_zone_tiles_for_detections(discard_groups["right"], "right_discards"),
         *unknown_zone,
+        *candidate_meld_zone,
         *hu_display_zone,
         *event_zone,
     ]
@@ -329,6 +337,7 @@ def _classify_table_zones_auto(detections: list[Detection], width: int, height: 
         top_discards=_labels_left_to_right(discard_groups["top"]),
         right_discards=_labels_top_to_bottom(discard_groups["right"]),
         unknown_tiles=[tile.label for tile in unknown_zone],
+        candidate_meld_tiles=[tile.label for tile in candidate_meld_zone],
         hu_display_tiles=[tile.label for tile in hu_display_zone],
         event_tiles=[tile.label for tile in event_zone],
         zone_tiles=zone_tiles,
@@ -528,6 +537,9 @@ def classify_table_zones_by_rois(
     hu_display_zone = [tile for tile in isolated_tiles if tile.zone == "hu_display_tiles"]
     event_zone = [tile for tile in isolated_tiles if tile.zone == "event_tiles"]
     unknown_zone = [tile for tile in isolated_tiles if tile.zone == "unknown_tiles"]
+    candidate_meld_zone = [
+        tile for tile in isolated_tiles if tile.zone == "candidate_meld_tiles"
+    ]
     use_manual_hand = "my_hand" in active_rois
     manual_bucket_names = {mapping[name] for name in active_rois}
     discard_groups = _split_discards_by_player(buckets["center_discards"], width, height)
@@ -558,6 +570,8 @@ def classify_table_zones_by_rois(
         *_zone_tiles_from_zone(fallback, "right_discards"),
         *unknown_zone,
         *_zone_tiles_from_zone(fallback, "unknown_tiles"),
+        *candidate_meld_zone,
+        *_zone_tiles_from_zone(fallback, "candidate_meld_tiles"),
         *hu_display_zone,
         *_zone_tiles_from_zone(fallback, "hu_display_tiles"),
         *event_zone,
@@ -578,6 +592,10 @@ def classify_table_zones_by_rois(
         unknown_tiles=[
             *[tile.label for tile in unknown_zone],
             *fallback.unknown_tiles,
+        ],
+        candidate_meld_tiles=[
+            *[tile.label for tile in candidate_meld_zone],
+            *fallback.candidate_meld_tiles,
         ],
         hu_display_tiles=[*[tile.label for tile in hu_display_zone], *fallback.hu_display_tiles],
         event_tiles=[*[tile.label for tile in event_zone], *fallback.event_tiles],
@@ -726,8 +744,10 @@ def reconcile_zone_tile_limits(zones: TableZones) -> TableZones:
         top_discards=zones.top_discards,
         right_discards=zones.right_discards,
         unknown_tiles=[*zones.unknown_tiles, *removed_labels],
+        candidate_meld_tiles=zones.candidate_meld_tiles,
         hu_display_tiles=zones.hu_display_tiles,
         event_tiles=zones.event_tiles,
+        table_decor_tiles=zones.table_decor_tiles,
         zone_tiles=kept_zone_tiles,
         meld_groups=zones.meld_groups,
     )
@@ -904,7 +924,7 @@ def _append_meld_segment_zone_tiles(
     if _is_valid_meld_segment_count(count):
         valid.extend(_zone_tiles_for_detections(segment, zone, group_id=group_id, source=source))
         return
-    target_zone = "hu_display_tiles" if count in (1, 2) else "unknown_tiles"
+    target_zone = "candidate_meld_tiles"
     reason = "isolated_near_meld" if count in (1, 2) else "invalid_meld_group"
     isolated.extend(_zone_tiles_for_detections(segment, target_zone, group_id=group_id, source=source, reason=reason))
 
@@ -1000,7 +1020,8 @@ def _zone_count_line(zones: TableZones) -> str:
         f"left_meld={len(zones.left_melds)} "
         f"top_meld={len(zones.top_melds)} "
         f"right_meld={len(zones.right_melds)} "
-        f"center={len(zones.center_discards)} "
+        f"discards={len(zones.center_discards)} "
+        f"candidate_meld={len(zones.candidate_meld_tiles)} "
         f"unknown={len(zones.unknown_tiles) + len(zones.hu_display_tiles) + len(zones.event_tiles)} "
         f"expected_hand={expected_text}"
     )
@@ -1039,8 +1060,10 @@ def _final_zone_color(zone: str) -> tuple[int, int, int]:
         "top_discards": (255, 180, 0),
         "right_discards": (255, 180, 0),
         "unknown_tiles": (180, 120, 255),
+        "candidate_meld_tiles": (80, 210, 255),
         "hu_display_tiles": (255, 80, 220),
         "event_tiles": (0, 165, 255),
+        "table_decor_tiles": (120, 120, 120),
     }
     return colors.get(zone, (255, 255, 255))
 
@@ -1054,8 +1077,10 @@ def _zone_short_name(zone: str) -> str:
         "top_melds": "T",
         "center_discards": "D",
         "unknown_tiles": "U",
+        "candidate_meld_tiles": "CM",
         "hu_display_tiles": "HU",
         "event_tiles": "EV",
+        "table_decor_tiles": "TD",
     }
     return names.get(zone, zone[:2].upper())
 
@@ -1072,7 +1097,7 @@ def _draw_auto_zone_bands(canvas: np.ndarray, width: int, height: int) -> None:
         ("HAND", (int(width * 0.18), int(height * 0.74), int(width * 0.82), height), (0, 220, 255)),
         ("MY MELD", (int(width * 0.82), int(height * 0.64), width, height), (0, 220, 80)),
         ("MY MELD", (0, int(height * 0.64), int(width * 0.18), height), (0, 220, 80)),
-        ("CENTER/DISCARD", (int(width * 0.25), int(height * 0.23), int(width * 0.75), int(height * 0.74)), (255, 180, 0)),
+        ("DISCARD AREA", (int(width * 0.25), int(height * 0.23), int(width * 0.75), int(height * 0.74)), (255, 180, 0)),
         ("LEFT", (0, int(height * 0.23), int(width * 0.25), int(height * 0.74)), (80, 255, 80)),
         ("RIGHT", (int(width * 0.75), int(height * 0.23), width, int(height * 0.74)), (80, 255, 80)),
         ("TOP", (int(width * 0.18), 0, int(width * 0.82), int(height * 0.23)), (80, 255, 80)),

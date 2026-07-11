@@ -223,17 +223,21 @@ def test_confirmed_meld_history_survives_one_missing_frame() -> None:
     assert fusion.last_state.meld_groups[0].kind == MeldKind.PONG
 
 
-def test_final_rebuild_preserves_isolated_meld_tile_as_unknown() -> None:
+def test_final_rebuild_preserves_isolated_meld_tile_as_candidate() -> None:
     fusion = TableStateFusion()
     fusion.update(_zones([_tile("7W", 40, "left_melds")]))
     state = fusion.last_state
     assert state is not None
-    assert state.zones.unknown_tiles == ["7W"]
-    assert [tile.label for tile in state.zones.zone_tiles if tile.zone == "unknown_tiles"] == [
+    assert state.zones.unknown_tiles == []
+    assert state.zones.candidate_meld_tiles == ["7W"]
+    assert [
+        tile.label for tile in state.zones.zone_tiles if tile.zone == "candidate_meld_tiles"
+    ] == [
         "7W"
     ]
     validation = validate_structured_state(state, True, 5, diagnostics_valid=True)
-    assert validation.state == RegionState.UNCERTAIN
+    assert validation.state == RegionState.PARTIAL
+    assert validation.reason == "candidate_meld_unresolved"
     assert not validation.allow_recommend
 
 
