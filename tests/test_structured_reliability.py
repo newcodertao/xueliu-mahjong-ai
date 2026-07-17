@@ -287,6 +287,41 @@ def test_confirmed_meld_history_survives_one_missing_frame() -> None:
     assert fusion.last_state.meld_groups[0].kind == MeldKind.PONG
 
 
+def test_confirmed_meld_fixed_slot_recovers_when_only_one_tile_remains() -> None:
+    fusion = TableStateFusion(meld_confirmation_frames=3)
+    pong = [_tile("3T", x, "bottom_melds") for x in (0, 40, 80)]
+    fusion.update(_zones(pong))
+
+    fusion.update(_zones([pong[1]]))
+
+    state = fusion.last_state
+    assert state is not None
+    assert len(state.meld_groups) == 1
+    group = state.meld_groups[0]
+    assert group.kind == MeldKind.PONG
+    assert group.observed_count == 1
+    assert group.logical_count == 3
+    assert len(group.inferred_tiles) == 2
+    assert group.reason == "fixed_slot_history_recovery"
+
+
+def test_fixed_meld_slots_recover_for_every_player_lane() -> None:
+    cases = {
+        "bottom_melds": [_tile("6W", x, "bottom_melds", 700) for x in (100, 140, 180)],
+        "top_melds": [_tile("6W", x, "top_melds", 40) for x in (400, 440, 480)],
+        "left_melds": [_tile("6W", 40, "left_melds", y) for y in (220, 280, 340)],
+        "right_melds": [_tile("6W", 920, "right_melds", y) for y in (180, 240, 300)],
+    }
+
+    for tiles in cases.values():
+        fusion = TableStateFusion()
+        fusion.update(_zones(tiles))
+        original_id = fusion.last_state.meld_groups[0].group_id
+        fusion.update(_zones([tiles[1]]))
+        recovered = fusion.last_state.meld_groups[0]
+        assert recovered.group_id == original_id
+        assert recovered.logical_count == 3
+        assert len(recovered.inferred_tiles) == 2
 def test_final_rebuild_preserves_isolated_meld_tile_as_candidate() -> None:
     fusion = TableStateFusion()
     fusion.update(_zones([_tile("7W", 40, "left_melds")]))

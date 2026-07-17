@@ -138,6 +138,19 @@ def test_inner_top_discard_row_is_not_top_meld() -> None:
     assert zones.center_discards[:3] == ["1T", "1T", "4B"]
 
 
+def test_upper_right_exposed_anchor_belongs_to_right_player_lane() -> None:
+    detections = [
+        _det("6B", 830, 120),
+        _det("6B", 835, 180),
+        _det("6B", 832, 240),
+    ]
+
+    zones = classify_table_zones(detections, width=1000, height=800)
+
+    assert zones.right_melds == ["6B", "6B", "6B"]
+    assert zones.top_melds == []
+
+
 def test_auto_zones_prefers_low_short_hand_after_many_melds() -> None:
     melds = [_det("3B", 220 + index * 42, 670) for index in range(12)]
     hand = [_det("8W", 420, 735), _det("9W", 465, 735)]

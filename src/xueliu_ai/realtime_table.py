@@ -305,6 +305,10 @@ def _classify_table_zones_auto(detections: list[Detection], width: int, height: 
             and AUTO_DISCARD_MIN_Y <= ny <= AUTO_DISCARD_MAX_Y
         ):
             center_discards.append(det)
+        # The right player's exposed lane reaches into the upper-right corner.
+        # Resolve that fixed anchor before the broad top lane.
+        elif nx >= 0.72 and ny <= 0.34:
+            right_melds.append(det)
         elif ny <= AUTO_DISCARD_MIN_Y:
             top_melds.append(det)
         elif nx <= AUTO_DISCARD_MIN_X:

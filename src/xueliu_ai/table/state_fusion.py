@@ -20,6 +20,8 @@ class MeldHistoryState:
     zone: str
     label: str
     kind: MeldKind | None
+    slot_index: int
+    template: MeldGroup
 
 
 class TableStateFusion:
@@ -128,15 +130,33 @@ class TableStateFusion:
     def build_structured_state(self, final_zones) -> StructuredTableState:
         """Rebuild all derived fields and advance meld history once for a final frame."""
         raw_groups, isolated_tiles = self._regroup_final_zones(final_zones)
-        meld_groups = self._update_meld_history(raw_groups)
+        meld_groups = self._update_meld_history(raw_groups, isolated_tiles)
         meld_zone_names = set(self.meld_axes)
         non_meld_tiles = [
             tile for tile in final_zones.zone_tiles if tile.zone not in meld_zone_names
         ]
         logical_meld_tiles = [tile for group in meld_groups for tile in group.logical_tiles]
+        isolated_tiles = [
+            tile
+            for tile in isolated_tiles
+            if not any(_tile_distance(tile, meld_tile) < 2.0 for meld_tile in logical_meld_tiles)
+        ]
         existing_unknown = [tile for tile in non_meld_tiles if tile.zone == "unknown_tiles"]
         existing_candidates = [
             tile for tile in non_meld_tiles if tile.zone == "candidate_meld_tiles"
+        ]
+        non_meld_tiles = [
+            tile
+            for tile in non_meld_tiles
+            if not (
+                tile.zone == "candidate_meld_tiles"
+                and any(_tile_distance(tile, isolated) < 2.0 for isolated in isolated_tiles)
+            )
+        ]
+        existing_candidates = [
+            tile
+            for tile in existing_candidates
+            if not any(_tile_distance(tile, isolated) < 2.0 for isolated in isolated_tiles)
         ]
         unknown_labels = [tile.label for tile in existing_unknown]
         represented_unknown = Counter(unknown_labels)
@@ -200,9 +220,19 @@ class TableStateFusion:
             ]
             for zone in self.meld_axes
         }
-        return self._group_zone_tiles(by_zone, source="final")
+        groups, isolated = self._group_zone_tiles(by_zone, source="final")
+        isolated.extend(
+            tile
+            for tile in zones.zone_tiles
+            if tile.zone == "candidate_meld_tiles" and _candidate_meld_origin(tile) is not None
+        )
+        return groups, isolated
 
-    def _update_meld_history(self, groups: list[MeldGroup]) -> list[MeldGroup]:
+    def _update_meld_history(
+        self,
+        groups: list[MeldGroup],
+        isolated_tiles: list[ZoneTile],
+    ) -> list[MeldGroup]:
         unmatched_history = set(self._meld_history)
         active_history: set[str] = set()
         result: list[MeldGroup] = []
@@ -212,9 +242,11 @@ class TableStateFusion:
                 history_id = f"meld_{self._next_meld_id}"
                 self._next_meld_id += 1
                 previous = None
+                slot_index = self._next_slot(group.zone)
             else:
                 unmatched_history.remove(history_id)
                 previous = self._meld_history[history_id]
+                slot_index = previous.slot_index
 
             frames = (previous.stable_frames if previous else 0) + 1
             previous_kind = previous.kind if previous else None
@@ -242,11 +274,14 @@ class TableStateFusion:
                 zone=assigned.zone,
                 label=assigned.label,
                 kind=confirmed_kind,
+                slot_index=slot_index,
+                template=assigned,
             )
             active_history.add(history_id)
             result.append(assigned)
 
         self._meld_history_gap = False
+        remaining_isolated = list(isolated_tiles)
         for history_id in list(self._meld_history):
             if history_id in active_history:
                 continue
@@ -255,8 +290,30 @@ class TableStateFusion:
             if history.missed_frames > 2:
                 del self._meld_history[history_id]
             else:
-                self._meld_history_gap = True
+                recovered, used = _recover_history_group(history, remaining_isolated)
+                if recovered is not None:
+                    result.append(recovered)
+                    for tile in used:
+                        if tile in remaining_isolated:
+                            remaining_isolated.remove(tile)
+                    history.last_center = _meld_center(recovered)
+                    history.template = recovered
+                    self._meld_history_gap = True
+                else:
+                    self._meld_history_gap = True
+        result.sort(key=lambda group: (
+            group.zone,
+            self._meld_history[group.group_id].slot_index,
+        ))
         return result
+
+    def _next_slot(self, zone: str) -> int:
+        occupied = {
+            history.slot_index
+            for history in self._meld_history.values()
+            if history.zone == zone
+        }
+        return next((slot for slot in range(4) if slot not in occupied), len(occupied))
 
     def _match_history(self, group: MeldGroup, candidates: set[str]) -> str | None:
         center = _meld_center(group)
@@ -325,7 +382,7 @@ def _restore_grouping(
             replace(
                 source,
                 zone="candidate_meld_tiles",
-                group_id=None,
+                group_id=isolated.group_id,
                 reason=isolated.reason,
             )
         )
@@ -363,6 +420,72 @@ def _assign_group_id(group: MeldGroup, group_id: str) -> MeldGroup:
         inferred_tiles=inferred,
         conflicting_tiles=conflicts,
     )
+
+
+def _recover_history_group(
+    history: MeldHistoryState,
+    isolated_tiles: list[ZoneTile],
+) -> tuple[MeldGroup | None, list[ZoneTile]]:
+    """Restore a confirmed fixed-slot meld when one or two detections survive."""
+    if history.kind not in {MeldKind.PONG, MeldKind.KONG}:
+        return None, []
+    nearby = []
+    for tile in isolated_tiles:
+        origin = _candidate_meld_origin(tile)
+        if origin != history.zone or tile.label != history.label:
+            continue
+        distance = (
+            (tile.center_x - history.last_center[0]) ** 2
+            + (tile.center_y - history.last_center[1]) ** 2
+        ) ** 0.5
+        if distance <= max(24.0, history.tile_size) * 2.5:
+            nearby.append(tile)
+    if not 1 <= len(nearby) <= 2:
+        return None, []
+
+    template_tiles = history.template.logical_tiles
+    observed: list[ZoneTile] = []
+    unused_template = list(template_tiles)
+    for tile in nearby:
+        target = min(unused_template, key=lambda item: _tile_distance(item, tile))
+        unused_template.remove(target)
+        observed.append(
+            replace(
+                tile,
+                zone=history.zone,
+                group_id=history.group_id,
+                reason="meld_history_observed_slot",
+                inferred=False,
+            )
+        )
+    inferred = [
+        replace(
+            tile,
+            zone=history.zone,
+            group_id=history.group_id,
+            confidence=min(tile.confidence, 0.45),
+            source="history",
+            reason="meld_history_slot_recovery",
+            track_id=None,
+            inferred=True,
+        )
+        for tile in unused_template
+    ]
+    recovered = replace(
+        history.template,
+        group_id=history.group_id,
+        kind=history.kind,
+        observed_tiles=observed,
+        inferred_tiles=inferred,
+        conflicting_tiles=[],
+        confidence=min([tile.confidence for tile in [*observed, *inferred]], default=0.0),
+        reason="fixed_slot_history_recovery",
+    )
+    return recovered, nearby
+
+
+def _tile_distance(left: ZoneTile, right: ZoneTile) -> float:
+    return ((left.center_x - right.center_x) ** 2 + (left.center_y - right.center_y) ** 2) ** 0.5
 
 
 def _meld_center(group: MeldGroup) -> tuple[float, float]:

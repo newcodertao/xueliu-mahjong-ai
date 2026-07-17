@@ -149,6 +149,23 @@ def test_oversized_candidate_is_event_animation() -> None:
     assert result.candidate_meld_tiles == []
 
 
+def test_bottom_edge_tile_near_hand_is_not_hu_without_independent_spacing() -> None:
+    classifier = EventTileClassifier(hu_stable_frames=3)
+    candidate = ZoneTile("5B", 0.9, 450, 700, 486, 752, "unknown_tiles")
+    hand = ZoneTile("4B", 0.9, 490, 700, 526, 752, "hand")
+    zones = _zones(
+        hand=["4B"],
+        unknown_tiles=["5B"],
+        zone_tiles=[hand, candidate],
+    )
+
+    for _ in range(4):
+        result = classifier.update(zones, width=1000, height=800)
+
+    assert result.hu_display_tiles == []
+    assert result.unknown_tiles == ["5B"]
+
+
 def test_structured_state_machine_requires_consecutive_stability() -> None:
     machine = StructuredStateMachine(minimum_stable_frames=3)
     zones = _zones(hand=["1W"] * 14)

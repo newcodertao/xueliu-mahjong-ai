@@ -17,12 +17,13 @@ def classify_isolated_tile(
     stable_frames: int = 0,
     movement: float = 0.0,
     oversized: bool = False,
+    independently_spaced: bool = True,
 ) -> EventClassification:
     if oversized:
         return EventClassification("event_tiles", "oversized_animation_tile")
     if movement > max(tile.width, tile.height) * 0.8:
         return EventClassification("event_tiles", "moving_animation_tile")
-    if anchor and _inside(tile, anchor) and stable_frames >= 3:
+    if anchor and independently_spaced and _inside(tile, anchor) and stable_frames >= 3:
         return EventClassification("hu_display_tiles", "stable_hu_anchor")
     return EventClassification("unknown_tiles", "isolated_without_anchor_evidence")
 
@@ -49,6 +50,19 @@ class EventTileClassifier:
             for tile in zones.zone_tiles
             if tile.zone in {"unknown_tiles", "candidate_meld_tiles"}
         ]
+        structural_tiles = [
+            tile
+            for tile in zones.zone_tiles
+            if tile.zone
+            in {
+                "hand",
+                "bottom_melds",
+                "left_melds",
+                "top_melds",
+                "right_melds",
+                "center_discards",
+            }
+        ]
         unmatched = set(self._observations)
         classified: list[ZoneTile] = []
         for tile in candidates:
@@ -67,12 +81,14 @@ class EventTileClassifier:
             tracked = replace(tile, track_id=track_id)
             anchor = _hu_anchor(tracked, width, height)
             oversized = tracked.width > width * 0.10 or tracked.height > height * 0.11
+            independently_spaced = _independently_spaced(tracked, structural_tiles)
             result = classify_isolated_tile(
                 tracked,
                 anchor,
                 stable_frames,
                 movement,
                 oversized,
+                independently_spaced,
             )
             if result.zone == "unknown_tiles" and stable_frames < self.hu_stable_frames:
                 result = EventClassification("event_tiles", "transient_unsettled_tile")
@@ -124,13 +140,22 @@ def _distance(left: ZoneTile, right: ZoneTile) -> float:
     return ((left.center_x - right.center_x) ** 2 + (left.center_y - right.center_y) ** 2) ** 0.5
 
 
+def _independently_spaced(tile: ZoneTile, structural_tiles: list[ZoneTile]) -> bool:
+    for other in structural_tiles:
+        separation = _distance(tile, other)
+        required = max(tile.width, tile.height, other.width, other.height) * 1.35
+        if separation < required:
+            return False
+    return True
+
+
 def _hu_anchor(tile: ZoneTile, width: int, height: int) -> tuple[float, float, float, float] | None:
     nx = tile.center_x / max(1, width)
     ny = tile.center_y / max(1, height)
     if nx <= 0.22:
         return (0, height * 0.18, width * 0.22, height * 0.82)
-    if nx >= 0.78:
-        return (width * 0.78, height * 0.18, width, height * 0.82)
+    if nx >= 0.76:
+        return (width * 0.76, height * 0.14, width, height * 0.84)
     if ny <= 0.24:
         return (width * 0.22, 0, width * 0.78, height * 0.24)
     if ny >= 0.72:

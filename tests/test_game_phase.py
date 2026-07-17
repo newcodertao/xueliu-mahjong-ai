@@ -37,6 +37,20 @@ def test_phase_requires_missing_suit_before_recommend() -> None:
     assert not decision.allow
 
 
+def test_stable_discard_activity_exits_choose_missing_suit_phase() -> None:
+    base = _zones(["1W"] * 4 + ["2W"] * 4 + ["3W"] * 4 + ["4W"])
+    zones = replace(
+        base,
+        center_discards=["8T"],
+        my_discards=["8T"],
+        all_tiles=[*base.hand, "8T"],
+    )
+
+    phase = infer_game_phase(PhaseContext(zones, diagnose_zones(zones), True, None, 14))
+
+    assert phase == GamePhase.WAITING
+
+
 def test_phase_allows_recommend_when_stable_my_turn() -> None:
     zones = _zones(["1W"] * 4 + ["2W"] * 4 + ["3W"] * 4 + ["4W", "5W"])
     decision = should_allow_recommend(PhaseContext(zones, diagnose_zones(zones), True, "W", 14))

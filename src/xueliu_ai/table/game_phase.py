@@ -64,7 +64,23 @@ def infer_game_phase(context: PhaseContext) -> GamePhase:
     if hand_count == 0 and total_visible >= 20:
         return GamePhase.SETTLEMENT
 
-    if context.missing_suit is None and hand_count in context.diagnostics.expected_hand_counts:
+    board_activity = bool(
+        zones.center_discards
+        or zones.my_discards
+        or zones.left_discards
+        or zones.top_discards
+        or zones.right_discards
+        or zones.meld_groups
+        or zones.bottom_melds
+        or zones.left_melds
+        or zones.top_melds
+        or zones.right_melds
+    )
+    if (
+        context.missing_suit is None
+        and hand_count in context.diagnostics.expected_hand_counts
+        and not board_activity
+    ):
         return GamePhase.CHOOSE_MISSING_SUIT
 
     # Turn phase is a core-hand fact. Peripheral board uncertainty must not
