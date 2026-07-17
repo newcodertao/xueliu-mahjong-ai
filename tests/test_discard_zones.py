@@ -29,6 +29,9 @@ def test_discards_are_split_by_table_side() -> None:
     assert zones.top_discards == ["3W"]
     assert zones.right_discards == ["4W"]
     assert zones.center_discards == ["3W", "2W", "4W", "1W"]
+    assert len([tile for tile in zones.zone_tiles if tile.zone == "center_discards"]) == 4
+    directional_zones = {"my_discards", "left_discards", "top_discards", "right_discards"}
+    assert not any(tile.zone in directional_zones for tile in zones.zone_tiles)
 
 
 def test_auto_zones_detect_full_bottom_hand_without_manual_roi() -> None:
@@ -75,6 +78,64 @@ def test_auto_zones_does_not_bridge_far_right_meld_into_hand() -> None:
 
     assert zones.hand == hand
     assert zones.bottom_melds == meld
+
+
+def test_auto_zones_does_not_append_small_far_drawn_tile() -> None:
+    hand = ["4W", "5W", "5W", "6W", "6W", "7W", "8W", "5T", "6T", "7T"]
+    detections = [_det(label, 95 + index * 70, 690, 62, 90) for index, label in enumerate(hand)]
+    detections.append(_det("2T", 920, 715, 42, 58))
+
+    zones = classify_table_zones(detections, width=1100, height=800)
+
+    assert zones.hand == hand
+    assert "2T" not in zones.hand
+
+
+def test_bottom_play_area_splits_large_hand_from_small_pong() -> None:
+    hand = ["4W", "5W", "5W", "6W", "6W", "7W", "8W", "6T", "7T", "8T", "2B"]
+    detections = [
+        _det(label, 120 + index * 82, 690, 74, 94)
+        for index, label in enumerate(hand)
+    ]
+    detections += [
+        _det("2T", 1040 + index * 58, 712, 48, 64)
+        for index in range(3)
+    ]
+
+    zones = classify_table_zones(detections, width=1280, height=800)
+
+    assert zones.hand == hand
+    assert zones.bottom_melds == ["2T", "2T", "2T"]
+    assert zones.meld_groups[0].kind == MeldKind.PONG
+
+
+def test_bottom_play_area_keeps_same_size_drawn_tile_in_hand() -> None:
+    hand = ["1W", "2W", "3W", "4W", "5W", "6W", "7W", "8W", "9W", "1T", "2T", "3T", "4T"]
+    detections = [
+        _det(label, 80 + index * 66, 690, 58, 88)
+        for index, label in enumerate(hand)
+    ]
+    detections.append(_det("5T", 960, 692, 58, 88))
+
+    zones = classify_table_zones(detections, width=1100, height=800)
+
+    assert zones.hand == [*hand, "5T"]
+    assert zones.bottom_melds == []
+
+
+def test_inner_top_discard_row_is_not_top_meld() -> None:
+    detections = [
+        _det("1T", 420, 145),
+        _det("1T", 465, 145),
+        _det("4B", 510, 145),
+        _det("1W", 180, 735),
+        _det("2W", 225, 735),
+    ]
+
+    zones = classify_table_zones(detections, width=1000, height=800)
+
+    assert zones.top_melds == []
+    assert zones.center_discards[:3] == ["1T", "1T", "4B"]
 
 
 def test_auto_zones_prefers_low_short_hand_after_many_melds() -> None:

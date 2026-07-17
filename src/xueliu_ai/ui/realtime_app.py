@@ -13,8 +13,9 @@ from tkinter import ttk
 
 import cv2
 
+from xueliu_ai.config import load_yaml
 from xueliu_ai.capture.roi_calibrator import calibrate_roi
-from xueliu_ai.capture.roi_config import Roi, load_screen_profile, update_roi
+from xueliu_ai.capture.roi_config import Roi, clear_rois, load_screen_profile, update_roi
 from xueliu_ai.capture.screen_capture import ScreenCapture
 from xueliu_ai.game_logging.game_logger import GameLogger
 from xueliu_ai.mahjong.shanten import best_shanten, normal_shanten, seven_pairs_shanten
@@ -32,8 +33,15 @@ from xueliu_ai.strategy.discard_advisor import DiscardAdvice, advise_discard
 from xueliu_ai.table.event_classifier import EventTileClassifier
 from xueliu_ai.table.game_phase import GamePhase, PhaseContext, should_allow_recommend
 from xueliu_ai.table.my_area import analyze_my_area
+from xueliu_ai.table.recommendation_readiness import (
+    RecommendationMode,
+    RecommendationThresholds,
+    evaluate_recommendation_readiness,
+    recommendations_are_robust,
+    with_robustness,
+)
 from xueliu_ai.table.state_fusion import TableStateFusion
-from xueliu_ai.table.state_validator import StructuredStateMachine, combine_recommendation_gates
+from xueliu_ai.table.state_validator import StructuredStateMachine
 from xueliu_ai.vision.detection_types import Detection
 from xueliu_ai.vision.detection_validator import non_max_suppression
 from xueliu_ai.vision.yolo_detector import YoloDetector
@@ -41,6 +49,15 @@ from xueliu_ai.vision.yolo_detector import YoloDetector
 
 DEFAULT_MODEL = "models/yolo/xueliu_final325_plus_longjing39_plus83_clean_v1_0709.pt"
 PREVIEW_WINDOW = "xueliu realtime preview"
+MANUAL_ZONE_ROIS = (
+    "my_hand",
+    "my_play_area",
+    "my_melds",
+    "left_melds",
+    "top_melds",
+    "right_melds",
+    "discards",
+)
 MISSING_SUIT_TO_CODE = {"": None, "万": "W", "筒": "T", "条": "B"}
 SUIT_NAMES = {"W": "万", "T": "筒", "B": "条"}
 
@@ -66,7 +83,11 @@ class RealtimeApp:
         self.save_hard_cases_var = tk.BooleanVar(value=True)
         self.auto_zones_var = tk.BooleanVar(value=True)
         self.manual_zones_var = tk.BooleanVar(value=False)
-        self.use_table_context_var = tk.BooleanVar(value=False)
+        self.use_table_context_var = tk.BooleanVar(value=True)
+        app_config = load_yaml("configs/app.yaml")
+        self.readiness_thresholds = RecommendationThresholds.from_mapping(
+            app_config.get("recommendation_readiness")
+        )
         self.status_var = tk.StringVar(value="未启动")
         self.phase_var = tk.StringVar(value="-")
         self.recommend_gate_var = tk.StringVar(value="-")
@@ -76,6 +97,8 @@ class RealtimeApp:
         self.zone_var = tk.StringVar(value="-")
         self.visible_var = tk.StringVar(value="-")
         self.structured_var = tk.StringVar(value="-")
+        self.recommendation_mode_var = tk.StringVar(value="-")
+        self.quality_var = tk.StringVar(value="-")
         self.roi_summary_var = tk.StringVar(value="-")
 
         self._build_layout()
@@ -138,6 +161,11 @@ class RealtimeApp:
         ttk.Button(controls, text="可选-对家碰杠区", command=lambda: self._select_roi("top_melds")).pack(fill=tk.X, pady=3)
         ttk.Button(controls, text="可选-下家碰杠区", command=lambda: self._select_roi("right_melds")).pack(fill=tk.X, pady=3)
         ttk.Button(controls, text="可选-弃牌区", command=lambda: self._select_roi("discards")).pack(fill=tk.X, pady=3)
+        ttk.Button(
+            controls,
+            text="清除手动区域（保留牌桌）",
+            command=self._clear_manual_regions,
+        ).pack(fill=tk.X, pady=(8, 3))
         ttk.Button(controls, text="开始识别", command=self._start).pack(fill=tk.X, pady=(14, 3))
         ttk.Button(controls, text="停止识别", command=self._stop).pack(fill=tk.X, pady=3)
 
@@ -155,6 +183,8 @@ class RealtimeApp:
         self._result_row(results, "状态", self.status_var)
         self._result_row(results, "牌局阶段", self.phase_var)
         self._result_row(results, "推荐开关", self.recommend_gate_var)
+        self._result_row(results, "推荐模式", self.recommendation_mode_var)
+        self._result_row(results, "识别质量", self.quality_var)
         self._result_row(results, "当前手牌", self.hand_var)
         self._result_row(results, "推荐出牌", self.advice_var)
         self._result_row(results, "牌型/向听", self.shape_var)
@@ -193,6 +223,18 @@ class RealtimeApp:
             self._append_log(f"已保存 {name}: {roi.to_dict()}")
         except Exception as exc:
             self._append_log(f"选择区域失败: {exc}")
+
+    def _clear_manual_regions(self) -> None:
+        if self.worker and self.worker.is_alive():
+            self._append_log("请先停止实时识别，再清除手动区域。")
+            return
+        try:
+            clear_rois(MANUAL_ZONE_ROIS)
+            self.manual_zones_var.set(False)
+            self._refresh_roi_summary()
+            self._append_log("已清除手牌、碰杠和弃牌手动区域；牌桌总区域已保留。")
+        except Exception as exc:
+            self._append_log(f"清除手动区域失败: {exc}")
 
     def _start(self) -> None:
         if self.worker and self.worker.is_alive():
@@ -254,6 +296,9 @@ class RealtimeApp:
                 low_hand_candidates = _low_confidence_hand_candidates(
                     detector, table_image, conf, iou, enabled=self.auto_zones_var.get()
                 )
+                low_meld_candidates = _low_confidence_meld_candidates(
+                    detector, table_image, conf, iou, enabled=self.auto_zones_var.get()
+                )
 
                 hand_tiles = zones.hand
                 play_roi = profile.rois.get("my_play_area")
@@ -269,7 +314,12 @@ class RealtimeApp:
                     hand_tiles = [det.label for det in sorted(hand_detections, key=lambda item: item.center_x)]
                     zones = _replace_zone_hand(zones, hand_tiles)
 
-                zones = structural_fusion.update(zones, low_hand_candidates, finalize=False)
+                zones = structural_fusion.update(
+                    zones,
+                    low_hand_candidates,
+                    low_meld_candidates,
+                    finalize=False,
+                )
                 zones = event_classifier.update(zones, table_image.shape[1], table_image.shape[0])
 
                 raw_hand_tiles = hand_tiles
@@ -293,39 +343,59 @@ class RealtimeApp:
                         detections=len(detections),
                     )
                 )
-                if not region_check.valid:
-                    decision = type(decision)(
-                        phase=decision.phase,
-                        allow=False,
-                        reasons=[*decision.reasons, f"region_state:{region_check.reason}"],
-                    )
                 structure_check = structured_state.update(
                     structured_table_state,
                     phase_stable=decision.phase
                     in {GamePhase.WAITING, GamePhase.MY_TURN, GamePhase.PLAYING_PARTIAL},
                     diagnostics_valid=diagnostics.valid,
                 )
-                if not structure_check.allow_recommend:
-                    decision = type(decision)(
-                        phase=decision.phase,
-                        allow=False,
-                        reasons=[*decision.reasons, f"structured_state:{structure_check.reason}"],
-                    )
-                final_allow = combine_recommendation_gates(
-                    structure_check,
-                    legacy_state_machine_allow=region_check.valid,
-                    phase_allows_recommendation=decision.allow,
-                )
-                if decision.allow != final_allow:
-                    decision = type(decision)(phase=decision.phase, allow=final_allow, reasons=decision.reasons)
                 my_area = analyze_my_area(zones)
-                visible_counts = (
+                trusted_visible_counts = (
                     visible_counts_from_zones(zones, include_hand=False) if use_table_context else {}
                 )
-                advice = (
-                    _safe_advice(visible_hand, missing_suit, open_melds, visible_counts)
-                    if decision.allow
-                    else None
+                readiness = evaluate_recommendation_readiness(
+                    structured_table_state,
+                    phase=decision.phase,
+                    missing_suit=missing_suit,
+                    hand_stable=stable,
+                    table_context_enabled=use_table_context,
+                    thresholds=self.readiness_thresholds,
+                )
+                hand_only_advice = None
+                table_aware_advice = None
+                advice = None
+                visible_counts: dict[str, int] = {}
+                if readiness.allow_recommend:
+                    hand_only_advice = _safe_advice(visible_hand, missing_suit, open_melds, {})
+                    table_aware_advice = (
+                        _safe_advice(
+                            visible_hand,
+                            missing_suit,
+                            open_melds,
+                            trusted_visible_counts,
+                        )
+                        if use_table_context and trusted_visible_counts
+                        else hand_only_advice
+                    )
+                    readiness = with_robustness(
+                        readiness,
+                        robust=recommendations_are_robust(
+                            hand_only_advice,
+                            table_aware_advice,
+                        ),
+                        table_context_enabled=use_table_context,
+                        trusted_context_available=bool(trusted_visible_counts),
+                        thresholds=self.readiness_thresholds,
+                    )
+                    if readiness.mode == RecommendationMode.HAND_ONLY:
+                        advice = hand_only_advice
+                    else:
+                        advice = table_aware_advice
+                        visible_counts = trusted_visible_counts
+                decision = type(decision)(
+                    phase=decision.phase,
+                    allow=readiness.allow_recommend,
+                    reasons=list(readiness.hard_block_reasons),
                 )
                 shape = _shape_summary(visible_hand, open_melds, visible_counts) if visible_hand else stable_message
 
@@ -334,24 +404,32 @@ class RealtimeApp:
                     "detections": len(detections),
                     "hand": visible_hand,
                     "raw_hand": raw_hand_tiles,
+                    "hand_recovery": structural_fusion.hand_recovery_info,
+                    "low_confidence_hand_candidates": [
+                        tile.to_dict() for tile in low_hand_candidates
+                    ],
                     "open_melds": open_melds,
                     "confirmed_open_melds": structured_table_state.confirmed_open_melds,
                     "suspected_open_melds": structured_table_state.suspected_open_melds,
                     "inferred_tile_count": structured_table_state.inferred_tile_count,
                     "structured_state_status": structure_check.state.value,
                     "structured_reason": structure_check.reason,
+                    "recommendation_readiness": readiness.to_dict(),
+                    "recommendation_mode": readiness.mode.value,
+                    "core_score": readiness.core_score,
+                    "context_score": readiness.context_score,
+                    "recommendation_robust": readiness.robust,
+                    "readiness_warnings": list(readiness.warnings),
                     "recommend_block_reason": (
-                        None
-                        if decision.allow
-                        else decision.reasons[0]
-                        if decision.reasons
-                        else structure_check.reason
+                        None if decision.allow else readiness.hard_block_reasons[0]
                     ),
                     "auto_zones": self.auto_zones_var.get(),
+                    "manual_zones": self.manual_zones_var.get(),
                     "use_table_context": use_table_context,
                     "zones": zones.to_dict(),
                     "raw_zones": raw_zones.to_dict(),
                     "visible_counts": visible_counts,
+                    "trusted_visible_counts": trusted_visible_counts,
                     "observed_visible_counts": structured_table_state.observed_visible_counts,
                     "logical_visible_counts": structured_table_state.logical_visible_counts,
                     "phase": decision.phase.value,
@@ -371,6 +449,8 @@ class RealtimeApp:
                     "region_state": structure_check.to_dict(),
                     "legacy_region_state": region_check.to_dict(),
                     "advice": asdict(advice) if advice else None,
+                    "advice_hand_only": asdict(hand_only_advice) if hand_only_advice else None,
+                    "advice_table_aware": asdict(table_aware_advice) if table_aware_advice else None,
                     "shape": shape,
                     "message": advice.explanation
                     if advice
@@ -473,6 +553,21 @@ class RealtimeApp:
         visible_counts = payload.get("visible_counts") or {}
         advice = payload.get("advice")
         diagnostics = payload.get("diagnostics") or {}
+        readiness = payload.get("recommendation_readiness") or {}
+        mode_names = {
+            "blocked": "暂停",
+            "hand_only": "基础（仅手牌）",
+            "table_aware": "普通（含牌桌信息）",
+            "enhanced": "增强（双策略一致）",
+        }
+        mode = str(payload.get("recommendation_mode") or "blocked")
+        self.recommendation_mode_var.set(mode_names.get(mode, mode))
+        self.quality_var.set(
+            f"核心 {float(payload.get('core_score') or 0):.0f} / "
+            f"上下文 {float(payload.get('context_score') or 0):.0f} / "
+            f"未知:关键 {readiness.get('critical_unknown_count', 0)} "
+            f"外围 {readiness.get('contextual_unknown_count', 0)}"
+        )
         self.structured_var.set(
             f"{payload.get('structured_state_status', '-')} | "
             f"confirmed {payload.get('confirmed_open_melds', 0)} | "
@@ -482,7 +577,9 @@ class RealtimeApp:
         )
         self.phase_var.set(str(payload.get("phase_text") or payload.get("phase") or "-"))
         if payload.get("allow_recommend"):
-            self.recommend_gate_var.set("允许推荐")
+            warnings = payload.get("readiness_warnings") or []
+            suffix = f"（{'；'.join(warnings)}）" if warnings else ""
+            self.recommend_gate_var.set(f"允许推荐{suffix}")
         else:
             reasons = payload.get("recommend_reasons") or []
             self.recommend_gate_var.set("暂停推荐：" + "；".join(reasons) if reasons else "暂停推荐")
@@ -516,12 +613,26 @@ class RealtimeApp:
         )
         self.visible_var.set(_counts_text(visible_counts) if visible_counts else "-")
         if diagnostics and not diagnostics.get("valid", True):
-            self.status_var.set("区域异常，暂停推荐")
+            if payload.get("allow_recommend"):
+                self.status_var.set("运行中（外围牌桌信息不完整）")
+            else:
+                self.status_var.set("核心状态不完整，暂停推荐")
 
         if advice:
             self.advice_var.set(_humanize_text(str(advice["explanation"])))
+            hand_only = payload.get("advice_hand_only") or {}
+            table_aware = payload.get("advice_table_aware") or {}
+            comparison = ""
+            if hand_only and table_aware:
+                hand_pick = hand_only.get("recommended")
+                table_pick = table_aware.get("recommended")
+                if hand_pick != table_pick:
+                    comparison = (
+                        f"基础推荐: {_tile_text(hand_pick)}；"
+                        f"牌桌推荐: {_tile_text(table_pick)}\n"
+                    )
             candidates = advice.get("candidates", [])[:8]
-            text = "\n".join(
+            text = comparison + "\n".join(
                 f"{_tile_text(item['tile'])}: 分数 {item['score']:.1f}, 向听 {item['shanten']}, 进张 {item['ukeire']}"
                 for item in candidates
             )
@@ -724,7 +835,8 @@ def _build_preview_overlay(
         _tile_text(advice.recommended) if advice else None,
         _preview_status_text(payload, advice),
     )
-    _draw_configured_rois(overlay, table_roi, profile.rois)
+    if payload.get("manual_zones"):
+        _draw_configured_rois(overlay, table_roi, profile.rois)
     roi_editor.draw(overlay)
     return overlay
 
@@ -1048,12 +1160,38 @@ def _low_confidence_hand_candidates(
 ):
     if not enabled:
         return []
-    recovery_conf = max(0.55, conf - 0.18)
+    recovery_conf = max(0.30, conf - 0.40)
     if recovery_conf >= conf:
         return []
     detections = _tile_detections(detector.detect_image(table_image, conf=recovery_conf, iou=iou), iou)
     zones = classify_table_zones(detections, table_image.shape[1], table_image.shape[0])
     return [tile for tile in zones.zone_tiles if tile.zone == "hand" and tile.confidence < conf]
+
+
+def _low_confidence_meld_candidates(
+    detector: YoloDetector,
+    table_image,
+    conf: float,
+    iou: float,
+    enabled: bool,
+):
+    """Return geometry-filtered low-confidence candidates from meld lanes."""
+    if not enabled:
+        return []
+    recovery_conf = max(0.25, conf - 0.45)
+    if recovery_conf >= conf:
+        return []
+    detections = _tile_detections(
+        detector.detect_image(table_image, conf=recovery_conf, iou=iou),
+        iou,
+    )
+    zones = classify_table_zones(detections, table_image.shape[1], table_image.shape[0])
+    meld_zones = {"bottom_melds", "left_melds", "top_melds", "right_melds"}
+    return [
+        tile
+        for tile in zones.zone_tiles
+        if tile.zone in meld_zones and tile.confidence < conf and not tile.inferred
+    ]
 
 
 def _should_use_recovered_hand(current_hand: list[str], recovered_hand: list[str]) -> bool:

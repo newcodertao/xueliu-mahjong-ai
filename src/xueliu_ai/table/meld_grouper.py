@@ -73,7 +73,21 @@ def _make_group(
     consistency = winning_vote / total_vote if total_vote else 0.0
     has_conflict = same_count != observed_count
 
-    suspected_kong = observed_count == 3 and _looks_like_stacked_kong(ordered, axis)
+    # A spatial majority must not overwrite another high-confidence tile.
+    # Such a run is ambiguous and remains a candidate until later frames
+    # resolve it.
+    conflicting_confidence = max(
+        (detection.confidence for detection in ordered if detection.label != label),
+        default=0.0,
+    )
+    if has_conflict and conflicting_confidence >= 0.70 and consistency < 0.80:
+        return None
+
+    suspected_kong = (
+        observed_count == 3
+        and not has_conflict
+        and _looks_like_stacked_kong(ordered, axis)
+    )
     kind = (
         MeldKind.SUSPECTED_KONG
         if suspected_kong
@@ -233,7 +247,14 @@ def _looks_like_stacked_kong(detections: list[Detection], axis: str) -> bool:
         for det in detections
     ]
     spread = max(cross(det) for det in detections) - min(cross(det) for det in detections)
-    return spread > median(sizes) * 0.35
+    cross_centers = sorted(cross(det) for det in detections)
+    closest_cross_gap = min(
+        right - left for left, right in zip(cross_centers, cross_centers[1:])
+    )
+    return (
+        spread > median(sizes) * 0.35
+        and closest_cross_gap <= median(sizes) * 0.15
+    )
 
 
 def _axis_center(axis: str):

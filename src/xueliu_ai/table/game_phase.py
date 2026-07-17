@@ -67,6 +67,14 @@ def infer_game_phase(context: PhaseContext) -> GamePhase:
     if context.missing_suit is None and hand_count in context.diagnostics.expected_hand_counts:
         return GamePhase.CHOOSE_MISSING_SUIT
 
+    # Turn phase is a core-hand fact. Peripheral board uncertainty must not
+    # hide a valid 13/14-tile turn transition.
+    if _is_my_turn_count(hand_count, context.diagnostics.open_melds):
+        return GamePhase.MY_TURN
+
+    if _is_waiting_count(hand_count, context.diagnostics.open_melds):
+        return GamePhase.WAITING
+
     if not context.diagnostics.valid:
         board_activity = bool(
             zones.center_discards
@@ -78,12 +86,6 @@ def infer_game_phase(context: PhaseContext) -> GamePhase:
         if not board_activity and total_visible <= 14 and hand_count < expected_minimum:
             return GamePhase.DEALING
         return GamePhase.PLAYING_PARTIAL
-
-    if _is_my_turn_count(hand_count, context.diagnostics.open_melds):
-        return GamePhase.MY_TURN
-
-    if _is_waiting_count(hand_count, context.diagnostics.open_melds):
-        return GamePhase.WAITING
 
     return GamePhase.UNKNOWN
 

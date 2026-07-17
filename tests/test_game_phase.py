@@ -45,6 +45,19 @@ def test_phase_allows_recommend_when_stable_my_turn() -> None:
     assert decision.allow
 
 
+def test_peripheral_diagnostic_error_does_not_hide_my_turn_phase() -> None:
+    base = _zones(["1W"] * 4 + ["2W"] * 4 + ["3W"] * 4 + ["4W", "5W"])
+    zones = replace(base, unknown_tiles=["7T"], all_tiles=[*base.hand, "7T"])
+    diagnostics = replace(
+        diagnose_zones(zones),
+        valid=False,
+        warnings=["peripheral_unknown"],
+    )
+
+    assert not diagnostics.valid
+    assert infer_game_phase(PhaseContext(zones, diagnostics, True, "W", 15)) == GamePhase.MY_TURN
+
+
 def test_incomplete_active_table_is_playing_partial_not_dealing() -> None:
     base = _zones(["1W"] * 10)
     zones = replace(base, center_discards=["2T"], all_tiles=[*base.hand, "2T"])

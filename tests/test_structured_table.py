@@ -126,15 +126,27 @@ def test_isolated_tile_transitions_from_animation_to_stable_hu() -> None:
     assert states[2] == ([], ["7W"])
 
 
-def test_candidate_meld_tile_never_transitions_to_hu() -> None:
+def test_candidate_meld_tile_resolves_to_stable_hu_anchor() -> None:
     classifier = EventTileClassifier(hu_stable_frames=3)
     tile = ZoneTile("7W", 0.9, 20, 200, 56, 252, "candidate_meld_tiles")
     zones = _zones(candidate_meld_tiles=["7W"], zone_tiles=[tile])
-    for _ in range(5):
+    states = []
+    for _ in range(3):
         result = classifier.update(zones, width=1000, height=800)
-        assert result.candidate_meld_tiles == ["7W"]
-        assert result.hu_display_tiles == []
-        assert result.event_tiles == []
+        states.append((result.candidate_meld_tiles, result.event_tiles, result.hu_display_tiles))
+    assert states[:2] == [([], ["7W"], []), ([], ["7W"], [])]
+    assert states[2] == ([], [], ["7W"])
+
+
+def test_oversized_candidate_is_event_animation() -> None:
+    classifier = EventTileClassifier(hu_stable_frames=3)
+    tile = ZoneTile("5B", 0.9, 450, 30, 550, 150, "candidate_meld_tiles")
+    zones = _zones(candidate_meld_tiles=["5B"], zone_tiles=[tile])
+
+    result = classifier.update(zones, width=1000, height=800)
+
+    assert result.event_tiles == ["5B"]
+    assert result.candidate_meld_tiles == []
 
 
 def test_structured_state_machine_requires_consecutive_stability() -> None:

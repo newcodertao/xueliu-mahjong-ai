@@ -49,11 +49,38 @@ class TableStateFusion:
         self._meld_history_gap = False
         self.last_state: StructuredTableState | None = None
 
-    def update(self, zones, low_confidence_hand_tiles=None, *, finalize: bool = True):
+    @property
+    def hand_recovery_info(self) -> dict[str, object]:
+        return dict(self.hand_slots.last_recovery)
+
+    def update(
+        self,
+        zones,
+        low_confidence_hand_tiles=None,
+        low_confidence_meld_tiles=None,
+        *,
+        finalize: bool = True,
+    ):
         """Fuse tile tracks; optionally finalize this frame and advance meld history."""
         tracked_input = [
             tile for tile in zones.zone_tiles if tile.zone in self.tracked_zones and not tile.inferred
         ]
+        for tile in zones.zone_tiles:
+            origin_zone = _candidate_meld_origin(tile)
+            if origin_zone is None:
+                continue
+            restored_candidate = replace(
+                tile,
+                zone=origin_zone,
+                reason="candidate_meld_retry",
+            )
+            if not _overlaps_existing(restored_candidate, tracked_input):
+                tracked_input.append(restored_candidate)
+        for tile in low_confidence_meld_tiles or []:
+            if tile.zone not in self.meld_axes:
+                continue
+            if not _overlaps_existing(tile, tracked_input):
+                tracked_input.append(tile)
         tracked_tiles = self.tracker.update(tracked_input)
         by_zone = {
             zone: [tile for tile in tracked_tiles if tile.zone == zone]
@@ -64,7 +91,11 @@ class TableStateFusion:
 
         preliminary_groups, isolated_tiles = self._group_zone_tiles(by_zone, source="fusion")
         logical_meld_tiles = [tile for group in preliminary_groups for tile in group.logical_tiles]
-        untouched = [tile for tile in zones.zone_tiles if tile.zone not in self.tracked_zones]
+        untouched = [
+            tile
+            for tile in zones.zone_tiles
+            if tile.zone not in self.tracked_zones and _candidate_meld_origin(tile) is None
+        ]
         untouched_unknown = [tile for tile in untouched if tile.zone == "unknown_tiles"]
         other_untouched = [tile for tile in untouched if tile.zone != "unknown_tiles"]
         zone_tiles = [
@@ -379,3 +410,25 @@ def _visible_counts(zones, logical: bool) -> dict[str, int]:
         tiles = group.logical_tiles if logical else group.observed_only_tiles
         counts.update(tile.label for tile in tiles)
     return dict(counts)
+
+
+def _overlaps_existing(candidate: ZoneTile, existing: list[ZoneTile]) -> bool:
+    for tile in existing:
+        intersection_width = max(0.0, min(candidate.x2, tile.x2) - max(candidate.x1, tile.x1))
+        intersection_height = max(0.0, min(candidate.y2, tile.y2) - max(candidate.y1, tile.y1))
+        intersection = intersection_width * intersection_height
+        if intersection <= 0:
+            continue
+        union = candidate.width * candidate.height + tile.width * tile.height - intersection
+        if union > 0 and intersection / union >= 0.45:
+            return True
+    return False
+
+
+def _candidate_meld_origin(tile: ZoneTile) -> str | None:
+    if tile.zone != "candidate_meld_tiles" or not tile.group_id:
+        return None
+    return next(
+        (zone for zone in TableStateFusion.meld_axes if tile.group_id.startswith(zone)),
+        None,
+    )

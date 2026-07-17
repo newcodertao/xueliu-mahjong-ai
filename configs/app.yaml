@@ -14,3 +14,10 @@ vision:
   confidence_threshold: 0.60
   iou_threshold: 0.50
   stable_frames: 2
+
+recommendation_readiness:
+  minimum_core_score: 90
+  table_aware_context_score: 50
+  enhanced_context_score: 80
+  max_safe_inferred_hand_tiles: 1
+  minimum_safe_inferred_confidence: 0.40

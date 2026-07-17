@@ -16,7 +16,10 @@ def classify_isolated_tile(
     anchor: tuple[float, float, float, float] | None = None,
     stable_frames: int = 0,
     movement: float = 0.0,
+    oversized: bool = False,
 ) -> EventClassification:
+    if oversized:
+        return EventClassification("event_tiles", "oversized_animation_tile")
     if movement > max(tile.width, tile.height) * 0.8:
         return EventClassification("event_tiles", "moving_animation_tile")
     if anchor and _inside(tile, anchor) and stable_frames >= 3:
@@ -41,7 +44,11 @@ class EventTileClassifier:
         self._next_id = 1
 
     def update(self, zones, width: int, height: int):
-        candidates = [tile for tile in zones.zone_tiles if tile.zone == "unknown_tiles"]
+        candidates = [
+            tile
+            for tile in zones.zone_tiles
+            if tile.zone in {"unknown_tiles", "candidate_meld_tiles"}
+        ]
         unmatched = set(self._observations)
         classified: list[ZoneTile] = []
         for tile in candidates:
@@ -59,7 +66,14 @@ class EventTileClassifier:
 
             tracked = replace(tile, track_id=track_id)
             anchor = _hu_anchor(tracked, width, height)
-            result = classify_isolated_tile(tracked, anchor, stable_frames, movement)
+            oversized = tracked.width > width * 0.10 or tracked.height > height * 0.11
+            result = classify_isolated_tile(
+                tracked,
+                anchor,
+                stable_frames,
+                movement,
+                oversized,
+            )
             if result.zone == "unknown_tiles" and stable_frames < self.hu_stable_frames:
                 result = EventClassification("event_tiles", "transient_unsettled_tile")
             assigned = replace(tracked, zone=result.zone, reason=result.reason)
@@ -72,13 +86,18 @@ class EventTileClassifier:
             if observation.missed_frames > self.max_missed:
                 del self._observations[track_id]
 
-        untouched = [tile for tile in zones.zone_tiles if tile.zone != "unknown_tiles"]
+        untouched = [
+            tile
+            for tile in zones.zone_tiles
+            if tile.zone not in {"unknown_tiles", "candidate_meld_tiles"}
+        ]
         unknown = [tile for tile in classified if tile.zone == "unknown_tiles"]
         hu = [tile for tile in classified if tile.zone == "hu_display_tiles"]
         events = [tile for tile in classified if tile.zone == "event_tiles"]
         return replace(
             zones,
             unknown_tiles=[tile.label for tile in unknown],
+            candidate_meld_tiles=[],
             hu_display_tiles=[tile.label for tile in hu],
             event_tiles=[tile.label for tile in events],
             zone_tiles=[*untouched, *classified],

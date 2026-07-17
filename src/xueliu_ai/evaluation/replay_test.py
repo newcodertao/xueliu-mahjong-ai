@@ -17,6 +17,8 @@ from xueliu_ai.realtime_table import (
     reconcile_zone_tile_limits,
 )
 from xueliu_ai.table.game_phase import PhaseContext, should_allow_recommend
+from xueliu_ai.table.recommendation_readiness import evaluate_recommendation_readiness
+from xueliu_ai.table.state_fusion import TableStateFusion
 from xueliu_ai.vision.detection_validator import non_max_suppression
 from xueliu_ai.vision.yolo_detector import YoloDetector
 
@@ -92,19 +94,34 @@ def run_replay_test(
         detections = detector.detect_image(frame, conf=conf, iou=iou)
         detections = non_max_suppression([det for det in detections if det.label in TILE_SET], iou)
         zones = reconcile_zone_tile_limits(classify_table_zones(detections, frame.shape[1], frame.shape[0]))
+        fusion = TableStateFusion()
+        fusion.update(zones, finalize=False)
+        state = fusion.build_structured_state(zones)
+        zones = state.zones
         diagnostics = diagnose_zones(zones)
+        stable = bool(case.expected.get("stable", True))
+        missing_suit = case.expected.get("missing_suit", "W")
         decision = should_allow_recommend(
             PhaseContext(
                 zones=zones,
                 diagnostics=diagnostics,
-                stable=bool(case.expected.get("stable", True)),
-                missing_suit=case.expected.get("missing_suit", "W"),
+                stable=stable,
+                missing_suit=missing_suit,
                 detections=len(detections),
             )
         )
+        readiness = evaluate_recommendation_readiness(
+            state,
+            phase=decision.phase,
+            missing_suit=missing_suit,
+            hand_stable=stable,
+        )
         actual = {
             "phase": decision.phase.value,
-            "allow_recommend": decision.allow,
+            "allow_recommend": readiness.allow_recommend,
+            "recommendation_mode": readiness.mode.value,
+            "core_score": readiness.core_score,
+            "context_score": readiness.context_score,
             "my_hand_count": len(zones.hand),
             "my_meld_count": diagnostics.open_melds,
             "diagnostics_valid": diagnostics.valid,
@@ -121,6 +138,7 @@ def run_replay_test(
                 "zones": zones.to_dict(),
                 "diagnostics": asdict(diagnostics),
                 "decision": asdict(decision),
+                "readiness": readiness.to_dict(),
             }
             failures.append(failure)
             (output / f"{_safe_name(case.case_id)}.json").write_text(
@@ -156,6 +174,9 @@ def evaluate_expected(
         "my_hand_count": "my_hand_count",
         "my_meld_count": "my_meld_count",
         "diagnostics_valid": "diagnostics_valid",
+        "recommendation_mode": "recommendation_mode",
+        "core_score": "core_score",
+        "context_score": "context_score",
     }
     failures: list[dict[str, Any]] = []
     for expected_key, actual_key in mapping.items():

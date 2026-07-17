@@ -51,6 +51,70 @@ def test_single_frame_hand_miss_can_be_temporarily_recovered() -> None:
     assert len(restored) == 4 and not any(tile.inferred for tile in restored)
 
 
+def test_equal_count_alternating_misses_recover_physical_slots() -> None:
+    tracker = HandSlotTracker(max_missed=2)
+    full = [_tile(label, index * 40) for index, label in enumerate(("6W", "7W", "8W", "9W"))]
+    first = tracker.update([full[0], full[1], full[3]])
+    assert len(first) == 3
+
+    second = tracker.update([full[0], full[1], full[2]])
+
+    assert [tile.label for tile in second] == ["6W", "7W", "8W", "9W"]
+    assert second[-1].inferred
+    assert tracker.last_recovery["recovered_from_history"] == 1
+
+
+def test_low_confidence_candidate_has_priority_over_slot_history() -> None:
+    tracker = HandSlotTracker(max_missed=2)
+    full = [_tile(label, index * 40) for index, label in enumerate(("7W", "8W", "9W"))]
+    tracker.update(full)
+    low_candidate = replace(full[1], confidence=0.38)
+
+    recovered = tracker.update([full[0], full[2]], [low_candidate])
+
+    assert [tile.label for tile in recovered] == ["7W", "8W", "9W"]
+    assert recovered[1].reason == "low_confidence_slot_candidate"
+    assert tracker.last_recovery["recovered_from_candidate"] == 1
+
+
+def test_low_confidence_candidate_seeds_obvious_middle_gap_without_history() -> None:
+    tracker = HandSlotTracker(max_missed=2)
+    observed = [_tile("7W", 0.0), _tile("9W", 80.0)]
+    candidate = replace(_tile("8W", 40.0), confidence=0.62)
+
+    recovered = tracker.update(observed, [candidate])
+
+    assert [tile.label for tile in recovered] == ["7W", "8W", "9W"]
+    assert recovered[1].inferred is True
+    assert recovered[1].reason == "low_confidence_geometric_gap"
+    assert tracker.last_recovery["recovered_from_candidate"] == 1
+
+
+def test_low_confidence_candidate_does_not_seed_without_two_sided_gap() -> None:
+    tracker = HandSlotTracker(max_missed=2)
+    observed = [_tile("7W", 0.0), _tile("9W", 40.0)]
+    candidate = replace(_tile("8W", 120.0), confidence=0.62)
+
+    recovered = tracker.update(observed, [candidate])
+
+    assert [tile.label for tile in recovered] == ["7W", "9W"]
+    assert tracker.last_recovery["recovered_from_candidate"] == 0
+
+
+def test_repeated_low_confidence_evidence_keeps_recovered_slot_alive() -> None:
+    tracker = HandSlotTracker(max_missed=2)
+    observed = [_tile("7W", 0.0), _tile("9W", 80.0)]
+    candidate = replace(_tile("8W", 40.0), confidence=0.62)
+
+    for _ in range(6):
+        recovered = tracker.update(observed, [candidate])
+        assert [tile.label for tile in recovered] == ["7W", "8W", "9W"]
+
+    recovered_without_candidate = tracker.update(observed, [])
+    assert [tile.label for tile in recovered_without_candidate] == ["7W", "8W", "9W"]
+    assert tracker.last_recovery["recovered_from_history"] == 1
+
+
 def test_inferred_meld_tile_not_counted_as_observed_visible_tile() -> None:
     fusion = TableStateFusion(meld_confirmation_frames=3)
     pair = [_tile("7W", 0, "bottom_melds"), _tile("7W", 40, "bottom_melds")]
@@ -259,6 +323,67 @@ def test_mismatched_tile_in_spatial_meld_is_not_dropped() -> None:
     assert sorted(tile.label for tile in group.observed_tiles) == ["7W", "7W", "8W"]
     assert [tile.label for tile in group.conflicting_tiles] == ["8W"]
     assert len(group.observed_tiles) + len(state.zones.unknown_tiles) == 3
+
+
+def test_high_confidence_conflict_is_not_forced_into_meld() -> None:
+    fusion = TableStateFusion()
+    tiles = [
+        replace(_tile("2W", 0, "left_melds"), confidence=0.94),
+        replace(_tile("7W", 0, "left_melds"), y1=60, y2=112, confidence=0.90),
+        replace(_tile("7W", 0, "left_melds"), y1=120, y2=172, confidence=0.91),
+    ]
+
+    fusion.update(_zones(tiles))
+    state = fusion.last_state
+
+    assert state is not None
+    assert state.meld_groups == []
+    assert sorted(state.zones.candidate_meld_tiles) == ["2W", "7W", "7W"]
+
+
+def test_low_confidence_meld_candidates_join_observed_group() -> None:
+    fusion = TableStateFusion()
+    high = [_tile("2T", 160, "bottom_melds")]
+    low = [
+        replace(_tile("2T", 80, "bottom_melds"), confidence=0.68),
+        replace(_tile("2T", 120, "bottom_melds"), confidence=0.33),
+    ]
+
+    fusion.update(_zones(high), low_confidence_meld_tiles=low)
+    state = fusion.last_state
+
+    assert state is not None
+    assert len(state.meld_groups) == 1
+    assert state.meld_groups[0].kind == MeldKind.PONG
+    assert state.meld_groups[0].observed_count == 3
+
+
+def test_isolated_pair_retries_with_low_confidence_middle_tile() -> None:
+    fusion = TableStateFusion()
+    candidates = [
+        replace(
+            _tile("2T", 80, "candidate_meld_tiles"),
+            group_id="bottom_melds_1_1",
+            confidence=0.92,
+        ),
+        replace(
+            _tile("2T", 160, "candidate_meld_tiles"),
+            group_id="bottom_melds_1_1",
+            confidence=0.87,
+        ),
+    ]
+    low = [replace(_tile("2T", 120, "bottom_melds"), confidence=0.52)]
+    zones = _zones(candidates)
+    zones = replace(zones, candidate_meld_tiles=["2T", "2T"])
+
+    fusion.update(zones, low_confidence_meld_tiles=low)
+    state = fusion.last_state
+
+    assert state is not None
+    assert state.zones.candidate_meld_tiles == []
+    assert state.zones.bottom_melds == ["2T", "2T", "2T"]
+    assert state.meld_groups[0].kind == MeldKind.PONG
+    assert state.meld_groups[0].observed_count == 3
 
 
 def test_post_processed_meld_promotes_after_stable_frames() -> None:

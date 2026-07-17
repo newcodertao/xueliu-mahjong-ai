@@ -87,3 +87,15 @@ def update_roi(
     profile = load_screen_profile(profile_path)
     profile.rois[name] = roi
     save_screen_profile(profile, profile_path)
+
+
+def clear_rois(
+    names: list[str] | tuple[str, ...],
+    path: str | Path = "configs/screen_profile.yaml",
+) -> None:
+    """Clear selected ROI definitions while preserving the screen profile."""
+    profile_path = resolve_path(path)
+    profile = load_screen_profile(profile_path)
+    for name in names:
+        profile.rois[name] = Roi(0, 0, 0, 0)
+    save_screen_profile(profile, profile_path)

@@ -5,6 +5,7 @@ import time
 from collections import Counter, deque
 from dataclasses import dataclass, field
 from pathlib import Path
+from statistics import median
 
 import cv2
 import numpy as np
@@ -20,6 +21,13 @@ from xueliu_ai.table.zone_assigner import assign_by_roi_priority
 from xueliu_ai.vision.detection_types import Detection
 from xueliu_ai.vision.detection_validator import non_max_suppression
 from xueliu_ai.vision.yolo_detector import YoloDetector
+
+
+AUTO_HAND_MIN_Y = 0.72
+AUTO_DISCARD_MIN_X = 0.25
+AUTO_DISCARD_MAX_X = 0.75
+AUTO_DISCARD_MIN_Y = 0.16
+AUTO_DISCARD_MAX_Y = 0.72
 
 
 @dataclass(frozen=True)
@@ -270,26 +278,38 @@ def _classify_table_zones_auto(detections: list[Detection], width: int, height: 
     top_melds: list[Detection] = []
     center_discards: list[Detection] = []
 
-    hand_run = _infer_bottom_hand_run(detections, width, height)
+    hand_run, bottom_play_melds = _partition_bottom_play_area(
+        detections,
+        width,
+        height,
+    )
     hand_ids = {id(det) for det in hand_run}
-    hand_top_ratio = min((det.y1 for det in hand_run), default=height) / max(1, height)
+    bottom_meld_ids = {id(det) for det in bottom_play_melds}
 
     for det in detections:
         nx = det.center_x / max(1, width)
         ny = ((det.y1 + det.y2) / 2) / max(1, height)
         if id(det) in hand_ids:
             hand.append(det)
-        elif hand_run and ny >= max(0.62, hand_top_ratio - 0.08):
+        elif id(det) in bottom_meld_ids:
             bottom_melds.append(det)
-        elif not hand_run and ny >= 0.74 and 0.18 <= nx <= 0.82:
+        elif not hand_run and ny >= AUTO_HAND_MIN_Y and 0.18 <= nx <= 0.82:
             hand.append(det)
-        elif ny >= 0.74:
+        elif ny >= AUTO_HAND_MIN_Y:
             bottom_melds.append(det)
-        elif ny <= 0.23:
+        # The four discard lattices occupy the inner table.  Resolve this
+        # semantic area before the broad player-side bands so the top row of
+        # discards is not mistaken for the top player's exposed melds.
+        elif (
+            AUTO_DISCARD_MIN_X <= nx <= AUTO_DISCARD_MAX_X
+            and AUTO_DISCARD_MIN_Y <= ny <= AUTO_DISCARD_MAX_Y
+        ):
+            center_discards.append(det)
+        elif ny <= AUTO_DISCARD_MIN_Y:
             top_melds.append(det)
-        elif nx <= 0.25:
+        elif nx <= AUTO_DISCARD_MIN_X:
             left_melds.append(det)
-        elif nx >= 0.75:
+        elif nx >= AUTO_DISCARD_MAX_X:
             right_melds.append(det)
         else:
             center_discards.append(det)
@@ -315,10 +335,6 @@ def _classify_table_zones_auto(detections: list[Detection], width: int, height: 
         *right_meld_zone,
         *top_meld_zone,
         *_zone_tiles_for_detections(center_discards, "center_discards"),
-        *_zone_tiles_for_detections(discard_groups["my"], "my_discards"),
-        *_zone_tiles_for_detections(discard_groups["left"], "left_discards"),
-        *_zone_tiles_for_detections(discard_groups["top"], "top_discards"),
-        *_zone_tiles_for_detections(discard_groups["right"], "right_discards"),
         *unknown_zone,
         *candidate_meld_zone,
         *hu_display_zone,
@@ -346,29 +362,54 @@ def _classify_table_zones_auto(detections: list[Detection], width: int, height: 
 
 
 def _infer_bottom_hand_run(detections: list[Detection], width: int, height: int) -> list[Detection]:
+    hand, _ = _partition_bottom_play_area(detections, width, height)
+    return hand
+
+
+def _partition_bottom_play_area(
+    detections: list[Detection],
+    width: int,
+    height: int,
+) -> tuple[list[Detection], list[Detection]]:
+    """Split the bottom play area into concealed hand and exposed tiles."""
     bottom_candidates = [
         det
         for det in detections
-        if _center_y(det) / max(1, height) >= 0.72
+        if _center_y(det) / max(1, height) >= AUTO_HAND_MIN_Y
         and 0.04 <= det.center_x / max(1, width) <= 0.96
     ]
-    runs = _horizontal_tile_runs(bottom_candidates)
-    hand_runs = _horizontal_tile_runs(bottom_candidates, max_gap_multiplier=2.45)
+    if not bottom_candidates:
+        return [], []
+
+    hand_sized = _hand_sized_bottom_candidates(bottom_candidates)
+    runs = _horizontal_tile_runs(hand_sized)
+    hand_runs = _horizontal_tile_runs(hand_sized, max_gap_multiplier=2.45)
     if not runs:
-        return []
+        return [], list(bottom_candidates)
 
     valid_hand_counts = {1, 2, 4, 5, 7, 8, 10, 11, 13, 14}
     valid_runs = [run for run in hand_runs if len(run) in valid_hand_counts]
     if valid_runs:
+        median_height = sorted(
+            max(1.0, det.y2 - det.y1) for det in bottom_candidates
+        )[len(bottom_candidates) // 2]
+        bottom_y = max(_run_center_y(run) for run in valid_runs)
+        bottom_band_runs = [
+            run
+            for run in valid_runs
+            if bottom_y - _run_center_y(run) <= median_height * 0.45
+        ]
         selected = max(
-            valid_runs,
+            bottom_band_runs,
             key=lambda run: (
-                _run_center_y(run),
                 len(run),
+                _run_center_y(run),
                 sum(det.area for det in run),
             ),
         )
-        return _include_drawn_tile_if_split(selected, runs)
+        hand = _include_drawn_tile_if_split(selected, runs)
+        hand_ids = {id(det) for det in hand}
+        return hand, [det for det in bottom_candidates if id(det) not in hand_ids]
 
     selected = max(
         hand_runs,
@@ -378,7 +419,30 @@ def _infer_bottom_hand_run(detections: list[Detection], width: int, height: int)
             sum(det.area for det in run),
         ),
     )
-    return _include_drawn_tile_if_split(selected, runs)
+    hand = _include_drawn_tile_if_split(selected, runs)
+    hand_ids = {id(det) for det in hand}
+    return hand, [det for det in bottom_candidates if id(det) not in hand_ids]
+
+
+def _hand_sized_bottom_candidates(
+    bottom_candidates: list[Detection],
+) -> list[Detection]:
+    """Keep tiles matching the dominant large concealed-hand template."""
+    if len(bottom_candidates) <= 2:
+        return list(bottom_candidates)
+
+    ranked = sorted(bottom_candidates, key=lambda det: det.area, reverse=True)
+    reference_count = max(2, min(len(ranked), max(5, round(len(ranked) * 0.60))))
+    reference = ranked[:reference_count]
+    reference_width = median(max(1.0, det.x2 - det.x1) for det in reference)
+    reference_height = median(max(1.0, det.y2 - det.y1) for det in reference)
+    matching = [
+        det
+        for det in bottom_candidates
+        if 0.78 <= max(1.0, det.x2 - det.x1) / reference_width <= 1.28
+        and 0.78 <= max(1.0, det.y2 - det.y1) / reference_height <= 1.28
+    ]
+    return matching or list(bottom_candidates)
 
 
 def _include_drawn_tile_if_split(hand_run: list[Detection], runs: list[list[Detection]]) -> list[Detection]:
@@ -399,8 +463,10 @@ def _include_drawn_tile_if_split(hand_run: list[Detection], runs: list[list[Dete
         gap = det.x1 - right_edge
         if (
             det.center_x > right_edge
-            and 0 <= gap <= median_width * 5.0
-            and abs(_center_y(det) - hand_y) <= median_height * 0.75
+            and 0 <= gap <= median_width * 2.0
+            and abs(_center_y(det) - hand_y) <= median_height * 0.45
+            and 0.78 <= max(1.0, det.x2 - det.x1) / median_width <= 1.28
+            and 0.78 <= max(1.0, det.y2 - det.y1) / median_height <= 1.28
         ):
             candidates.append(det)
 
@@ -560,10 +626,6 @@ def classify_table_zones_by_rois(
         *([] if "top_melds" in manual_bucket_names else _zone_tiles_from_zone(fallback, "top_melds")),
         *_zone_tiles_for_detections(buckets["center_discards"], "center_discards", source="manual_roi"),
         *_zone_tiles_from_zone(fallback, "center_discards"),
-        *_zone_tiles_for_detections(discard_groups["my"], "my_discards", source="manual_roi"),
-        *_zone_tiles_for_detections(discard_groups["left"], "left_discards", source="manual_roi"),
-        *_zone_tiles_for_detections(discard_groups["top"], "top_discards", source="manual_roi"),
-        *_zone_tiles_for_detections(discard_groups["right"], "right_discards", source="manual_roi"),
         *_zone_tiles_from_zone(fallback, "my_discards"),
         *_zone_tiles_from_zone(fallback, "left_discards"),
         *_zone_tiles_from_zone(fallback, "top_discards"),
@@ -766,19 +828,29 @@ def _split_discards_by_player(
     center_x = width / 2
     center_y = height / 2
     for det in discards:
+        nx = det.center_x / max(1, width)
+        ny = ((det.y1 + det.y2) / 2) / max(1, height)
         dx = det.center_x - center_x
         dy = ((det.y1 + det.y2) / 2) - center_y
-        horizontal = (det.x2 - det.x1) >= (det.y2 - det.y1) * 1.12
-        vertical = (det.y2 - det.y1) >= (det.x2 - det.x1) * 1.12
 
-        if abs(dx) > abs(dy):
-            owner = "right" if dx > 0 else "left"
-            if horizontal and abs(dy) > abs(dx) * 0.55:
-                owner = "my" if dy > 0 else "top"
+        # Use perspective-aware discard lanes before the radial fallback.
+        # The bottom and top lattices are wide horizontal bands, while the
+        # side lattices occupy tall bands around the table edges.
+        if ny >= 0.56 and 0.28 <= nx <= 0.72:
+            owner = "my"
+        elif ny <= 0.34 and 0.28 <= nx <= 0.72:
+            owner = "top"
+        elif nx < 0.45:
+            owner = "left"
+        elif nx > 0.55:
+            owner = "right"
         else:
-            owner = "my" if dy > 0 else "top"
-            if vertical and abs(dx) > abs(dy) * 0.55:
-                owner = "right" if dx > 0 else "left"
+            normalized_dx = dx / max(1.0, width / 2)
+            normalized_dy = dy / max(1.0, height / 2)
+            if abs(normalized_dx) > abs(normalized_dy):
+                owner = "right" if normalized_dx > 0 else "left"
+            else:
+                owner = "my" if normalized_dy > 0 else "top"
         groups[owner].append(det)
     return groups
 
@@ -1040,9 +1112,12 @@ def _discard_zone_count_line(zones: TableZones) -> str:
 def _zone_color(det: Detection, width: int, height: int) -> tuple[int, int, int]:
     nx = det.center_x / max(1, width)
     ny = ((det.y1 + det.y2) / 2) / max(1, height)
-    if ny >= 0.74 and 0.18 <= nx <= 0.82:
+    if ny >= AUTO_HAND_MIN_Y and 0.04 <= nx <= 0.96:
         return (0, 220, 255)
-    if 0.25 < nx < 0.75 and 0.23 < ny < 0.74:
+    if (
+        AUTO_DISCARD_MIN_X <= nx <= AUTO_DISCARD_MAX_X
+        and AUTO_DISCARD_MIN_Y <= ny <= AUTO_DISCARD_MAX_Y
+    ):
         return (255, 180, 0)
     return (0, 220, 80)
 
@@ -1087,20 +1162,61 @@ def _zone_short_name(zone: str) -> str:
 
 def _draw_zone_guides(canvas: np.ndarray, width: int, height: int) -> None:
     guide_color = (80, 80, 80)
-    cv2.line(canvas, (0, int(height * 0.74)), (width, int(height * 0.74)), guide_color, 1)
-    cv2.line(canvas, (int(width * 0.18), 0), (int(width * 0.18), height), guide_color, 1)
-    cv2.line(canvas, (int(width * 0.82), 0), (int(width * 0.82), height), guide_color, 1)
+    cv2.line(
+        canvas,
+        (0, int(height * AUTO_HAND_MIN_Y)),
+        (width, int(height * AUTO_HAND_MIN_Y)),
+        guide_color,
+        1,
+    )
+    cv2.line(
+        canvas,
+        (int(width * AUTO_DISCARD_MIN_X), 0),
+        (int(width * AUTO_DISCARD_MIN_X), height),
+        guide_color,
+        1,
+    )
+    cv2.line(
+        canvas,
+        (int(width * AUTO_DISCARD_MAX_X), 0),
+        (int(width * AUTO_DISCARD_MAX_X), height),
+        guide_color,
+        1,
+    )
 
 
 def _draw_auto_zone_bands(canvas: np.ndarray, width: int, height: int) -> None:
     bands = [
-        ("HAND", (int(width * 0.18), int(height * 0.74), int(width * 0.82), height), (0, 220, 255)),
-        ("MY MELD", (int(width * 0.82), int(height * 0.64), width, height), (0, 220, 80)),
-        ("MY MELD", (0, int(height * 0.64), int(width * 0.18), height), (0, 220, 80)),
-        ("DISCARD AREA", (int(width * 0.25), int(height * 0.23), int(width * 0.75), int(height * 0.74)), (255, 180, 0)),
-        ("LEFT", (0, int(height * 0.23), int(width * 0.25), int(height * 0.74)), (80, 255, 80)),
-        ("RIGHT", (int(width * 0.75), int(height * 0.23), width, int(height * 0.74)), (80, 255, 80)),
-        ("TOP", (int(width * 0.18), 0, int(width * 0.82), int(height * 0.23)), (80, 255, 80)),
+        (
+            "BOTTOM PLAY AREA",
+            (int(width * 0.04), int(height * AUTO_HAND_MIN_Y), int(width * 0.96), height),
+            (0, 220, 255),
+        ),
+        (
+            "DISCARD AREA",
+            (
+                int(width * AUTO_DISCARD_MIN_X),
+                int(height * AUTO_DISCARD_MIN_Y),
+                int(width * AUTO_DISCARD_MAX_X),
+                int(height * AUTO_DISCARD_MAX_Y),
+            ),
+            (255, 180, 0),
+        ),
+        (
+            "LEFT",
+            (0, int(height * AUTO_DISCARD_MIN_Y), int(width * AUTO_DISCARD_MIN_X), int(height * AUTO_DISCARD_MAX_Y)),
+            (80, 255, 80),
+        ),
+        (
+            "RIGHT",
+            (int(width * AUTO_DISCARD_MAX_X), int(height * AUTO_DISCARD_MIN_Y), width, int(height * AUTO_DISCARD_MAX_Y)),
+            (80, 255, 80),
+        ),
+        (
+            "TOP",
+            (int(width * AUTO_DISCARD_MIN_X), 0, int(width * AUTO_DISCARD_MAX_X), int(height * AUTO_DISCARD_MIN_Y)),
+            (80, 255, 80),
+        ),
     ]
     for label, rect, color in bands:
         _draw_transparent_rect(canvas, rect, color, alpha=0.08)
