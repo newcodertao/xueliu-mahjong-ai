@@ -14,14 +14,22 @@ class MissingSuitAdvice:
     suit: str
     score_by_suit: dict[str, float]
     reason: str
+    burden_by_suit: dict[str, float] | None = None
 
 
 def advise_missing_suit(tiles: list[str]) -> MissingSuitAdvice:
     validate_tiles(tiles)
     scores = {suit: _suit_keep_value([tile for tile in tiles if tile_suit(tile) == suit]) for suit in SUITS}
-    suit = min(scores, key=lambda item: (scores[item], _suit_count(tiles, item)))
-    reason = f"建议定缺{SUIT_TEXT[suit]}：该花色张数和连搭价值最低"
-    return MissingSuitAdvice(suit=suit, score_by_suit=scores, reason=reason)
+    burdens = {
+        suit: scores[suit] + _suit_count(tiles, suit) ** 2 * 4.0
+        for suit in SUITS
+    }
+    suit = min(burdens, key=lambda item: (burdens[item], _suit_count(tiles, item)))
+    reason = (
+        f"建议定缺{SUIT_TEXT[suit]}：综合清理张数、对子、顺子和连搭后，"
+        f"该花色保留价值最低（负担 {burdens[suit]:.1f}）"
+    )
+    return MissingSuitAdvice(suit=suit, score_by_suit=scores, reason=reason, burden_by_suit=burdens)
 
 
 def _suit_count(tiles: list[str], suit: str) -> int:
@@ -42,4 +50,3 @@ def _suit_keep_value(tiles: list[str]) -> float:
         if rank in counts and rank + 1 in counts:
             value += 4.0
     return value
-

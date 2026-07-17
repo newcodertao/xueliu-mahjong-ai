@@ -7,7 +7,7 @@ import threading
 import time
 import tkinter as tk
 from collections import Counter, deque
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from tkinter import ttk
 
@@ -30,6 +30,8 @@ from xueliu_ai.realtime_table import (
     visible_counts_from_zones,
 )
 from xueliu_ai.strategy.discard_advisor import DiscardAdvice, advise_discard
+from xueliu_ai.strategy.context import StrategyContext
+from xueliu_ai.strategy.engine import StrategyEngine
 from xueliu_ai.table.event_classifier import EventTileClassifier
 from xueliu_ai.table.game_phase import GamePhase, PhaseContext, should_allow_recommend
 from xueliu_ai.table.my_area import analyze_my_area
@@ -260,6 +262,7 @@ class RealtimeApp:
             region_state = RegionStateMachine()
             structured_state = StructuredStateMachine(minimum_stable_frames=3)
             structural_fusion = TableStateFusion(max_missed=2)
+            strategy_engine = StrategyEngine()
             event_classifier = EventTileClassifier(hu_stable_frames=3, max_missed=2)
             roi_editor = PreviewRoiEditor()
             hard_case_recorder = HardCaseRecorder()
@@ -365,14 +368,27 @@ class RealtimeApp:
                 table_aware_advice = None
                 advice = None
                 visible_counts: dict[str, int] = {}
+                strategy_compute_ms = 0.0
                 if readiness.allow_recommend:
+                    strategy_started = time.perf_counter()
                     hand_only_advice = _safe_advice(visible_hand, missing_suit, open_melds, {})
+                    strategy_context = replace(
+                        StrategyContext.from_structured_state(
+                            structured_table_state,
+                            missing_suit=missing_suit,
+                            phase=decision.phase.value,
+                            recognition_quality=max(0.0, min(1.0, readiness.core_score / 100.0)),
+                        ),
+                        hand=tuple(visible_hand),
+                    )
                     table_aware_advice = (
                         _safe_advice(
                             visible_hand,
                             missing_suit,
                             open_melds,
                             trusted_visible_counts,
+                            strategy_context,
+                            strategy_engine,
                         )
                         if use_table_context and trusted_visible_counts
                         else hand_only_advice
@@ -392,6 +408,7 @@ class RealtimeApp:
                     else:
                         advice = table_aware_advice
                         visible_counts = trusted_visible_counts
+                    strategy_compute_ms = (time.perf_counter() - strategy_started) * 1000
                 decision = type(decision)(
                     phase=decision.phase,
                     allow=readiness.allow_recommend,
@@ -452,6 +469,8 @@ class RealtimeApp:
                     "advice_hand_only": asdict(hand_only_advice) if hand_only_advice else None,
                     "advice_table_aware": asdict(table_aware_advice) if table_aware_advice else None,
                     "shape": shape,
+                    "strategy_version": "deterministic-v2",
+                    "strategy_compute_ms": strategy_compute_ms,
                     "message": advice.explanation
                     if advice
                     else (decision.reason_text() if not decision.allow else stable_message),
@@ -633,7 +652,10 @@ class RealtimeApp:
                     )
             candidates = advice.get("candidates", [])[:8]
             text = comparison + "\n".join(
-                f"{_tile_text(item['tile'])}: 分数 {item['score']:.1f}, 向听 {item['shanten']}, 进张 {item['ukeire']}"
+                f"{_tile_text(item['tile'])}: 分数 {item['score']:.1f}, "
+                f"向听 {item['shanten']}, 进张 {item['ukeire']}, "
+                f"风险 {float(item.get('risk') or 0):.0%}, "
+                f"两步 {float(item.get('two_step_value') or 0):.1f}"
                 for item in candidates
             )
         else:
@@ -1304,10 +1326,20 @@ def _safe_advice(
     missing_suit: str | None,
     open_melds: int = 0,
     visible_counts: dict[str, int] | None = None,
+    context: StrategyContext | None = None,
+    engine: StrategyEngine | None = None,
 ) -> DiscardAdvice | None:
     if len(tiles) != 14 - open_melds * 3:
         return None
-    return advise_discard(tiles, missing_suit, visible_counts=visible_counts, open_melds=open_melds)
+    if engine is not None and context is not None:
+        return engine.evaluate_discard(context).advice
+    return advise_discard(
+        tiles,
+        missing_suit,
+        visible_counts=visible_counts,
+        open_melds=open_melds,
+        context=context,
+    )
 
 
 def _shape_summary(

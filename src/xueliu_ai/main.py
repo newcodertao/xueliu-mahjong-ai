@@ -18,6 +18,8 @@ from xueliu_ai.dataset.video_pseudo_labeler import (
     pseudo_label_frames,
 )
 from xueliu_ai.evaluation.replay_test import run_replay_test
+from xueliu_ai.evaluation.strategy_gold import load_strategy_gold, run_strategy_gold
+from xueliu_ai.evaluation.strategy_replay import generate_strategy_report, summarize_strategy_log
 from xueliu_ai.evaluation.video_replay import replay_video
 from xueliu_ai.game_logging.game_logger import GameLogger
 from xueliu_ai.game_logging.review_report import generate_markdown_report, summarize_jsonl
@@ -175,6 +177,17 @@ def main(argv: list[str] | None = None) -> None:
     report.add_argument("--log", default="data/games/session.jsonl")
     report.add_argument("--output", default="data/reviews/report.md")
 
+    strategy_report = subparsers.add_parser(
+        "strategy-report", help="Summarize strategy decisions from a JSONL log."
+    )
+    strategy_report.add_argument("--log", default="data/games/realtime_ui.jsonl")
+    strategy_report.add_argument("--output", default="data/reviews/strategy_report.md")
+
+    strategy_gold = subparsers.add_parser(
+        "strategy-gold", help="Run curated strategy gold cases."
+    )
+    strategy_gold.add_argument("--gold", required=True)
+
     args = parser.parse_args(argv)
 
     if args.command == "collect":
@@ -270,6 +283,7 @@ def main(argv: list[str] | None = None) -> None:
             "recommended": advice.recommended,
             "explanation": advice.explanation,
             "candidates": [candidate.__dict__ for candidate in advice.candidates],
+            "evaluations": [evaluation.to_dict() for evaluation in advice.evaluations or []],
         }
         if args.log:
             GameLogger(args.log).log("advice", {"hand": tiles, **payload})
@@ -329,6 +343,15 @@ def main(argv: list[str] | None = None) -> None:
     elif args.command == "report":
         output = generate_markdown_report(args.log, args.output)
         print(f"report ready: {output}")
+    elif args.command == "strategy-report":
+        summary = summarize_strategy_log(args.log)
+        output = Path(args.output)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(generate_strategy_report(summary), encoding="utf-8")
+        print(f"strategy report ready: {output}")
+    elif args.command == "strategy-gold":
+        summary = run_strategy_gold(load_strategy_gold(args.gold))
+        print(json.dumps(summary.__dict__, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":

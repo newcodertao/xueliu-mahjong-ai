@@ -4,8 +4,47 @@ rules:
   copies_per_tile: 4
   require_missing_suit: true
   discard_missing_suit_first: true
+  allow_chi: false
+  continue_after_hu: true
+  max_players: 4
+  max_open_melds: 4
+  settlement:
+    base_score: 1
+    fan_cap: 5
+    self_draw_multiplier: 1
+    discard_win_multiplier: 1
+    kong_scores:
+      an_kong: 2
+      ming_kong: 1
+      bu_kong: 1
+    check_forbidden_suit: true
+    check_ready_hand: true
+  patterns:
+    normal: 1
+    seven_pairs: 2
+    all_triplets: 2
+    flush: 2
+    root: 1
   first_version_patterns:
     - normal
     - seven_pairs
     - all_triplets
     - flush
+
+strategy:
+  weights:
+    shanten: 100.0
+    ukeire: 2.0
+    wait_quality: 8.0
+    two_step: 0.35
+    expected_fan: 12.0
+    blood_flow_continuation: 5.0
+    immediate_score: 10.0
+    deal_in_risk: 45.0
+    shape_loss: 1.0
+    uncertainty: 20.0
+  limits:
+    two_step_draws: 27
+    monte_carlo_simulations: 1000
+    monte_carlo_seed: 20260717
+    monte_carlo_time_ms: 500
