@@ -26,6 +26,9 @@ from xueliu_ai.game_logging.review_report import generate_markdown_report, summa
 from xueliu_ai.mahjong.tiles import parse_tiles
 from xueliu_ai.realtime import run_realtime_loop
 from xueliu_ai.realtime_table import run_realtime_table_loop
+from xueliu_ai.selfplay.agents import FastRuleAgent, RandomAgent, ValueAgent
+from xueliu_ai.selfplay.optimizer import optimize_fast_agent, write_optimization_manifest
+from xueliu_ai.selfplay.tournament import run_tournament
 from xueliu_ai.strategy.discard_advisor import advise_discard
 from xueliu_ai.ui.debug_viewer import show_debug_image
 from xueliu_ai.ui.realtime_app import launch_realtime_app
@@ -187,6 +190,22 @@ def main(argv: list[str] | None = None) -> None:
         "strategy-gold", help="Run curated strategy gold cases."
     )
     strategy_gold.add_argument("--gold", required=True)
+
+    selfplay = subparsers.add_parser(
+        "selfplay", help="Run rule-driven Xueliu self-play games."
+    )
+    selfplay.add_argument("--games", type=int, default=100)
+    selfplay.add_argument("--seed", type=int, default=20260717)
+    selfplay.add_argument("--workers", type=int, default=1)
+
+    selfplay_optimize = subparsers.add_parser(
+        "selfplay-optimize", help="Search strategy parameters through self-play."
+    )
+    selfplay_optimize.add_argument("--candidates", type=int, default=12)
+    selfplay_optimize.add_argument("--games", type=int, default=40)
+    selfplay_optimize.add_argument("--seed", type=int, default=20260717)
+    selfplay_optimize.add_argument("--workers", type=int, default=1)
+    selfplay_optimize.add_argument("--output", default="data/selfplay/latest_optimization.json")
 
     args = parser.parse_args(argv)
 
@@ -352,6 +371,29 @@ def main(argv: list[str] | None = None) -> None:
     elif args.command == "strategy-gold":
         summary = run_strategy_gold(load_strategy_gold(args.gold))
         print(json.dumps(summary.__dict__, ensure_ascii=False, indent=2))
+    elif args.command == "selfplay":
+        agents = [
+            ValueAgent(name="value"),
+            FastRuleAgent(name="fast-a"),
+            FastRuleAgent(name="fast-b"),
+            RandomAgent(name="random", seed=args.seed),
+        ]
+        result = run_tournament(
+            agents,
+            games=args.games,
+            seed=args.seed,
+            workers=args.workers,
+        )
+        print(json.dumps([stats.__dict__ for stats in result.agents], ensure_ascii=False, indent=2))
+    elif args.command == "selfplay-optimize":
+        result = optimize_fast_agent(
+            candidates=args.candidates,
+            games_per_candidate=args.games,
+            seed=args.seed,
+            workers=args.workers,
+        )
+        output = write_optimization_manifest(args.output, result)
+        print(json.dumps({"output": str(output), "champion": result.champion.parameters}, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":

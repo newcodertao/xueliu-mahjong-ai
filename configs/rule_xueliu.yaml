@@ -48,3 +48,12 @@ strategy:
     monte_carlo_simulations: 1000
     monte_carlo_seed: 20260717
     monte_carlo_time_ms: 500
+
+selfplay:
+  objective: average_net_score
+  seed: 20260717
+  max_turns: 300
+  tournament_games: 1000
+  optimization_candidates: 24
+  games_per_candidate: 200
+  keep_champion_fraction: 0.20
